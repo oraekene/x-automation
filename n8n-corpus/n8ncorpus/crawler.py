@@ -154,19 +154,34 @@ def _follow_links(manifest_data: dict, key: str, mirror: Path) -> list[dict]:
         if not links.is_workflow_link(url):
             continue
         n8n_id = links.extract_n8n_id(url)
-        page = fetching.fetch(url)
-        if page is None:
-            manifest.add_flag(manifest_data, key, f"unresolvable workflow link: {url}")
-            continue
         if n8n_id:
-            workflow_json = links.extract_page_workflow(page)
+            workflow_json = None
+            guide = ""
+            if links.is_n8n_page(url):
+                # Live n8n.io pages render from api.n8n.io and no longer
+                # embed the workflow JSON; the API is the primary source.
+                api_body = fetching.fetch(links.n8n_api_url(n8n_id))
+                if api_body is not None:
+                    extracted = links.extract_api_workflow(api_body)
+                    if extracted:
+                        workflow_json, guide = extracted
             if workflow_json is None:
-                manifest.add_flag(manifest_data, key, f"no workflow JSON on page: {url}")
-                continue
+                page = fetching.fetch(url)
+                if page is None:
+                    manifest.add_flag(manifest_data, key, f"unresolvable workflow link: {url}")
+                    continue
+                workflow_json = links.extract_page_workflow(page)
+                if workflow_json is None:
+                    manifest.add_flag(manifest_data, key, f"no workflow JSON on page: {url}")
+                    continue
+                guide = links.html_to_text(page)
             stem = n8n_id
-            guide = links.html_to_text(page)
             guide_path = f"fetched/{key}/{stem}.md"
         else:
+            page = fetching.fetch(url)
+            if page is None:
+                manifest.add_flag(manifest_data, key, f"unresolvable workflow link: {url}")
+                continue
             if not workflows.is_workflow(page):
                 manifest.add_flag(manifest_data, key, f"not a workflow: {url}")
                 continue

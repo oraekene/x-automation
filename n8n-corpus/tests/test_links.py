@@ -1,3 +1,4 @@
+import json
 import unittest
 
 from n8ncorpus import links
@@ -108,6 +109,59 @@ class HtmlToTextTest(unittest.TestCase):
     def test_skips_script_contents(self):
         html = '<p>Guide text.</p><script type="application/json">{"name": "W"}</script>'
         self.assertEqual(links.html_to_text(html), "Guide text.")
+
+
+class N8nApiTest(unittest.TestCase):
+    def test_is_n8n_page_hosts(self):
+        self.assertTrue(links.is_n8n_page("https://n8n.io/workflows/123-slug/"))
+        self.assertTrue(links.is_n8n_page("https://www.n8n.io/workflows/123/"))
+        self.assertFalse(links.is_n8n_page("https://api.n8n.io/api/workflows/123"))
+        self.assertFalse(links.is_n8n_page("https://example.com/workflows/123/"))
+
+    def test_n8n_api_url(self):
+        self.assertEqual(
+            links.n8n_api_url("4846"), "https://api.n8n.io/api/workflows/4846"
+        )
+
+    def test_extracts_workflow_and_description_from_api_record(self):
+        body = (
+            '{"data": {"id": 4846, "description": "**Guide** text", '
+            '"workflow": {"name": "W", "nodes": [], "connections": {}}}}'
+        )
+        self.assertEqual(
+            links.extract_api_workflow(body),
+            ('{"name": "W", "nodes": [], "connections": {}}', "**Guide** text"),
+        )
+
+    def test_extracts_workflow_from_string_field(self):
+        body = (
+            '{"data": {"description": "", '
+            '"workflow": "{\\"name\\": \\"W\\", \\"nodes\\": [], \\"connections\\": {}}"}}'
+        )
+        workflow_json, guide = links.extract_api_workflow(body)
+        self.assertEqual(workflow_json, '{"name": "W", "nodes": [], "connections": {}}')
+        self.assertEqual(guide, "")
+
+    def test_fills_missing_name_from_record(self):
+        body = (
+            '{"data": {"id": 7756, "name": "Nutrition tracker", "description": "g", '
+            '"workflow": {"nodes": [{"name": "T"}], "connections": {}}}}'
+        )
+        workflow_json, guide = links.extract_api_workflow(body)
+        self.assertEqual(
+            json.loads(workflow_json)["name"], "Nutrition tracker"
+        )
+        self.assertEqual(guide, "g")
+
+    def test_none_when_no_workflow_in_record(self):
+        self.assertIsNone(links.extract_api_workflow('{"data": {"id": 1}}'))
+
+    def test_none_when_workflow_not_workflow_shaped(self):
+        body = '{"data": {"workflow": {"foo": 1}}}'
+        self.assertIsNone(links.extract_api_workflow(body))
+
+    def test_none_when_body_not_json(self):
+        self.assertIsNone(links.extract_api_workflow("<html>challenge</html>"))
 
 
 if __name__ == "__main__":
