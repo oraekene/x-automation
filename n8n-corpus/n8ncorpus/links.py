@@ -37,8 +37,16 @@ def extract_n8n_id(url: str) -> str | None:
 
 
 def is_workflow_link(url: str) -> bool:
-    """True when following this link can yield an importable workflow."""
-    return extract_n8n_id(url) is not None or url.endswith(".json")
+    """True when following this link can yield an importable workflow.
+
+    GitHub blob pages (HTML, not raw JSON) are never workflow targets;
+    raw.githubusercontent.com links are.
+    """
+    if extract_n8n_id(url) is not None:
+        return True
+    if "/blob/" in url:
+        return False
+    return url.endswith(".json")
 
 
 def extract_page_workflow(html: str) -> str | None:

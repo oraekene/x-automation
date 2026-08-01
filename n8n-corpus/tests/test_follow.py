@@ -181,6 +181,43 @@ class FollowLinksTest(unittest.TestCase):
             ],
         )
 
+    def test_truncated_response_is_flagged_not_fatal(self):
+        with FixtureHttpServer(
+            {"/workflows/9-broken/": ("partial", PAGE_HTML)}
+        ) as server:
+            repo = make_fixture_repo(
+                {"README.md": f"- [Broken]({server.base}/workflows/9-broken/)\n"}
+            )
+            corpus = Path(tempfile.mkdtemp(prefix="n8n-corpus-")) / "corpus"
+            configs = [{"key": "fixture-repo", "url": str(repo)}]
+
+            crawler.crawl(corpus, configs)
+
+        manifest = json.loads((corpus / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["followed"], [])
+        self.assertEqual(
+            manifest["flags"],
+            [
+                {
+                    "repo": "fixture-repo",
+                    "message": f"unresolvable workflow link: {server.base}/workflows/9-broken/",
+                }
+            ],
+        )
+
+    def test_no_follow_skips_link_fetching(self):
+        repo = make_fixture_repo(
+            {"README.md": "- [Dead](https://n8n.io/workflows/999-dead/)\n"}
+        )
+        corpus = Path(tempfile.mkdtemp(prefix="n8n-corpus-")) / "corpus"
+        configs = [{"key": "fixture-repo", "url": str(repo)}]
+
+        crawler.crawl(corpus, configs, follow=False)
+
+        manifest = json.loads((corpus / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["followed"], [])
+        self.assertEqual(manifest["flags"], [])
+
     def test_skipped_repo_preserves_followed_without_refetch(self):
         with FixtureHttpServer(
             {"/workflows/1-page/": page_html(WORKFLOW_JSON, "Flow")}

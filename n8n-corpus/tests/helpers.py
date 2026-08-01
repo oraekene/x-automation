@@ -77,14 +77,16 @@ def commit_more(repo: Path, files: dict[str, str]) -> str:
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):
-    routes: dict[str, str] = {}
+    routes: dict[str, object] = {}
 
     def do_GET(self):
         if self.path in self.routes:
-            body = self.routes[self.path].encode("utf-8")
+            value = self.routes[self.path]
+            body = value.encode("utf-8") if isinstance(value, str) else value[1].encode("utf-8")
+            declared = len(body) + 100 if isinstance(value, tuple) else len(body)
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Content-Length", str(declared))
             self.end_headers()
             self.wfile.write(body)
         else:

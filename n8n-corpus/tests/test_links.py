@@ -47,6 +47,20 @@ class ClassifyTest(unittest.TestCase):
     def test_raw_json_is_workflow_link(self):
         self.assertTrue(links.is_workflow_link("https://example.com/raw/flow.json"))
 
+    def test_github_blob_page_is_not_workflow_link(self):
+        self.assertFalse(
+            links.is_workflow_link(
+                "https://github.com/owner/repo/blob/main/flows/a.json"
+            )
+        )
+
+    def test_github_raw_json_is_workflow_link(self):
+        self.assertTrue(
+            links.is_workflow_link(
+                "https://raw.githubusercontent.com/owner/repo/main/flows/a.json"
+            )
+        )
+
     def test_blog_is_not_workflow_link(self):
         self.assertFalse(links.is_workflow_link("https://blog.example.com/post"))
 

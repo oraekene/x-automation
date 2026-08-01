@@ -22,7 +22,7 @@ def clone(url: str, dest: Path) -> None:
     """Mirror a repo at its default branch, stripped of .git history."""
     safe_rmtree(dest)
     subprocess.run(
-        ["git", "clone", "--depth", "1", url, str(dest)],
+        ["git", "-c", "core.longpaths=true", "clone", "--depth", "1", url, str(dest)],
         check=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -31,10 +31,17 @@ def clone(url: str, dest: Path) -> None:
 
 
 def safe_rmtree(path: Path) -> None:
-    """Remove a tree, fixing Windows read-only flags so .git dies quietly."""
-    if not path.exists():
+    """Remove a tree, fixing Windows read-only flags so .git dies quietly.
+
+    Uses the ``\\\\?\\`` long-path prefix on Windows so paths longer than
+    MAX_PATH (260 chars) can be removed — some source repos ship such files.
+    """
+    target = os.path.abspath(str(path))
+    if os.name == "nt" and not target.startswith("\\\\?\\"):
+        target = "\\\\?\\" + target
+    if not os.path.exists(target):
         return
-    for root, dirs, files in os.walk(path):
+    for root, dirs, files in os.walk(target):
         for name in dirs + files:
-            (Path(root) / name).chmod(stat.S_IWRITE)
-    shutil.rmtree(path)
+            os.chmod(os.path.join(root, name), stat.S_IWRITE)
+    shutil.rmtree(target)

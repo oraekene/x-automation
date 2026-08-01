@@ -36,8 +36,26 @@ def main() -> None:
         action="store_true",
         help="re-clone every repo even when the pin already matches",
     )
+    parser.add_argument(
+        "--only",
+        default="",
+        help="comma-separated source repo keys to crawl (default: all six)",
+    )
+    parser.add_argument(
+        "--no-follow",
+        action="store_true",
+        help="skip following workflow links (use when the fetch transport is blocked)",
+    )
     args = parser.parse_args()
-    crawler.crawl(Path(args.corpus), SOURCE_REPOS, force=args.force)
+    repos = SOURCE_REPOS
+    if args.only:
+        keys = [k.strip() for k in args.only.split(",") if k.strip()]
+        by_key = {r["key"]: r for r in SOURCE_REPOS}
+        unknown = [k for k in keys if k not in by_key]
+        if unknown:
+            parser.error(f"unknown repo keys: {', '.join(unknown)}")
+        repos = [by_key[k] for k in keys]
+    crawler.crawl(Path(args.corpus), repos, force=args.force, follow=not args.no_follow)
     print(f"Crawl complete. Manifest: {Path(args.corpus) / 'manifest.json'}")
 
 

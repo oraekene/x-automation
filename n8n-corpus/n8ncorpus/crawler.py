@@ -10,12 +10,16 @@ from pathlib import Path, PurePosixPath
 from n8ncorpus import dedupe, docs, fetching, gitops, links, manifest, workflows
 
 
-def crawl(corpus: Path, repos: list[dict], force: bool = False) -> dict:
+def crawl(
+    corpus: Path, repos: list[dict], force: bool = False, follow: bool = True
+) -> dict:
     """Crawl every source repo into ``corpus`` and write the manifest.
 
     ``repos`` is a list of ``{"key": str, "url": str}`` configs. An
     unreachable repo is recorded as a crawl flag instead of aborting;
-    a re-run retries it. Returns the manifest as a dict.
+    a re-run retries it. With ``follow=False`` the link-following step is
+    skipped (the fetch transport may be blocked or unavailable). Returns
+    the manifest as a dict.
     """
     corpus.mkdir(parents=True, exist_ok=True)
     now = datetime.now(timezone.utc).isoformat()
@@ -62,8 +66,15 @@ def crawl(corpus: Path, repos: list[dict], force: bool = False) -> dict:
                 manifest.add_followed(manifest_data, entry)
             for flag in previous_flags.get(key, []):
                 manifest_data["flags"].append(flag)
-        else:
+        elif follow:
             followed_records.extend(_follow_links(manifest_data, key, mirror))
+        print(
+            f"{key}: pinned {sha[:10]}{' (skipped)' if skipped else ''}, "
+            f"{len([w for w in manifest_data['workflows'] if w['repo'] == key])} "
+            f"workflows, "
+            f"{len([d for d in manifest_data['docs'] if d['repo'] == key])} docs, "
+            f"{len([f for f in manifest_data['flags'] if f['repo'] == key])} flags"
+        )
 
     _store_followed(manifest_data, corpus / "fetched", followed_records)
     _write_manifest(corpus, manifest_data)
