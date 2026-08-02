@@ -1,3 +1,7 @@
 corpus/
 __pycache__/
 *.pyc
+node_modules/
+worker/.wrangler/
+worker/dist/
+.pytest_cache/

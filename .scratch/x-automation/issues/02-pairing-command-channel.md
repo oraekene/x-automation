@@ -1,0 +1,14 @@
+# 02 — Pairing + command channel
+
+**What to build:** The tracer bullet that proves the whole Worker↔Relay skeleton: a seeded user, a Relay that pairs with a pairing code, polls for commands, executes a test command, and reports results. A minimal dashboard page shows the relay's online/offline status and queued command count. D1 schema v1: users, relays, commands.
+
+**Blocked by:** 01
+
+**Status:** ready-for-agent
+
+- [ ] Pairing endpoint issues a pairing code and binds a relay to a user
+- [ ] Relay polls `GET /api/relays/<id>/commands` and receives pending commands (including queued catch-up backlog)
+- [ ] Relay reports outcomes via `POST /api/relays/<id>/results`
+- [ ] A test command (e.g. echo/ping) executes end-to-end: enqueued in dashboard → polled → executed → result recorded
+- [ ] Commands queue in D1 while the relay is offline and execute on reconnect
+- [ ] Minimal dashboard shows relay status and queued command count

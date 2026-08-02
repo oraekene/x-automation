@@ -1,0 +1,12 @@
+# 03 — Cloudflare Access + per-user scoping
+
+**What to build:** The dashboard behind Cloudflare Access email-OTP, with a thin `getUser()` boundary and per-user data scoping enforced in application code. Every query (relays, commands, later: automations, drafts, conversations) returns only the logged-in user's rows. The auth layer is behind a seam that can later swap to self-built magic-link auth.
+
+**Blocked by:** 02
+
+**Status:** ready-for-agent
+
+- [ ] Dashboard routes require Access authentication (email OTP)
+- [ ] `getUser()` boundary returns the authenticated identity, with a documented seam for swapping the identity provider
+- [ ] Relay and command queries are scoped per user — a second user sees no other user's relays or commands
+- [ ] Pairing flow associates a relay with the logged-in user
