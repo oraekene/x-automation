@@ -1,8 +1,7 @@
 import { Hono } from "hono";
-
-export type Env = {
-  DB: D1Database;
-};
+import type { Env } from "./types";
+import { relayRoutes } from "./routes/relays";
+import { PAGE } from "./dashboard";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -16,6 +15,8 @@ app.get("/health", async (c) => {
   }
 });
 
-app.get("/", (c) => c.json({ name: "x-automation-worker", health: "/health" }));
+app.route("/api/relays", relayRoutes);
+
+app.get("/", (c) => c.html(PAGE));
 
 export default app;
