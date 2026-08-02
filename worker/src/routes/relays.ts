@@ -1,6 +1,8 @@
 import { Hono, type Context } from "hono";
 import type { Env, RelayRow } from "../types";
 import { hashToken, nowSeconds, pairingCode } from "../lib/crypto";
+import { commandInsert } from "../lib/command";
+import { safeParse } from "../lib/json";
 import { relayOwnedBy } from "../lib/ownership";
 import { getUser } from "../auth";
 
@@ -22,14 +24,6 @@ async function bearerRelay(c: AppContext): Promise<RelayRow | null> {
     .bind(hash)
     .first()) as RelayRow | undefined;
   return row ?? null;
-}
-
-function safeParse(s: string): unknown {
-  try {
-    return JSON.parse(s);
-  } catch {
-    return {};
-  }
 }
 
 relayRoutes.post("/", async (c) => {
@@ -82,11 +76,7 @@ relayRoutes.post("/:id/commands", async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as { type?: string; payload?: unknown };
   if (!body.type) return c.json({ error: "type required" }, 400);
   const commandId = crypto.randomUUID();
-  await c.env.DB.prepare(
-    "INSERT INTO commands (id, relay_id, type, payload, status, attempts, created_at) VALUES (?, ?, ?, ?, 'pending', 0, ?)",
-  )
-    .bind(commandId, id, body.type, JSON.stringify(body.payload ?? {}), nowSeconds())
-    .run();
+  await commandInsert(c.env.DB, commandId, id, body.type, JSON.stringify(body.payload ?? {}), nowSeconds()).run();
   return c.json({ command_id: commandId }, 201);
 });
 

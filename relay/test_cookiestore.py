@@ -49,3 +49,16 @@ def test_missing_required_cookie_keys_rejected(tmp_path):
     store = cookiestore.CookieStore(tmp_path / "store.bin")
     with pytest.raises(cookiestore.CookieStoreError):
         store.save({"auth_token": "a"})
+
+
+def test_key_permissions_reenforced_on_reload(tmp_path):
+    if os.name != "posix":
+        return
+    store_path = tmp_path / "store.bin"
+    key_path = tmp_path / "store.bin.key"
+    cookiestore.CookieStore(store_path).save({"auth_token": "a", "ct0": "b"})
+    os.chmod(key_path, 0o644)
+    assert oct(os.stat(key_path).st_mode & 0o777) == "0o644"
+    # A subsequent open (via save) must tighten the loose key back to 0600.
+    cookiestore.CookieStore(store_path).save({"auth_token": "a", "ct0": "b"})
+    assert oct(os.stat(key_path).st_mode & 0o777) == "0o600"

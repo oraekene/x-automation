@@ -244,7 +244,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_attempts=args.max_attempts,
                 pacer=xclient.Pacer(),
             )
-            print(f"authenticated: rest_id={viewer['rest_id']} screen_name={viewer['screen_name']} name={viewer['name']}")
+            print(f"authenticated: rest_id={viewer['rest_id']} name={viewer['name']} (@{viewer['screen_name']})")
     except (RelayError, cookiestore.CookieStoreError, xclient.XError) as e:
         log.error("%s", e)
         return 1

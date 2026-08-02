@@ -1,21 +1,12 @@
-import { Hono, type Context } from "hono";
+import { Hono } from "hono";
 import type { Env, ScheduleRow } from "../types";
 import { nowSeconds } from "../lib/crypto";
 import { DEFAULT_INTERVAL_MINUTES, addIntervalInZone, isValidTimeZone } from "../lib/time";
+import { safeParse } from "../lib/json";
 import { relayOwnedBy } from "../lib/ownership";
 import { getUser } from "../auth";
 
-type AppContext = Context<{ Bindings: Env }>;
-
 export const scheduleRoutes = new Hono<{ Bindings: Env }>();
-
-function safeParse(s: string): unknown {
-  try {
-    return JSON.parse(s);
-  } catch {
-    return {};
-  }
-}
 
 scheduleRoutes.post("/", async (c) => {
   const user = await getUser(c);

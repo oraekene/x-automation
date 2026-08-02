@@ -1,5 +1,6 @@
-import type { Env } from "./types";
+import type { DueScheduleRow, Env } from "./types";
 import { nowSeconds } from "./lib/crypto";
+import { commandInsert } from "./lib/command";
 import { addIntervalInZone } from "./lib/time";
 
 export const TICK_CRON = "* * * * *";
@@ -7,15 +8,6 @@ export const MAINT_CRON = "0 * * * *";
 
 const MAX_TICK_BATCH = 40; // 40 jobs x 2 statements stays under D1's 100-statement batch limit
 const STALE_CLAIM_MS = 2 * 60 * 60 * 1000;
-
-type DueSchedule = {
-  id: string;
-  relay_id: string;
-  type: string;
-  payload: string;
-  interval_minutes: number;
-  timezone: string;
-};
 
 // Fan out every due job inline: enqueue one command per due schedule and
 // recompute the schedule's next_run_at in the user's timezone.
@@ -26,7 +18,7 @@ export async function tick(env: Env): Promise<number> {
     "SELECT id, relay_id, type, payload, interval_minutes, timezone, next_run_at FROM schedules WHERE status = 'active' AND next_run_at <= ? ORDER BY next_run_at ASC LIMIT ?",
   )
     .bind(nowSec, MAX_TICK_BATCH)
-    .all()) as unknown as { results: (DueSchedule & { next_run_at: number })[] };
+    .all()) as unknown as { results: DueScheduleRow[] };
 
   const statements: D1PreparedStatement[] = [];
   for (const s of due.results) {
@@ -40,9 +32,7 @@ export async function tick(env: Env): Promise<number> {
         nowSec,
         s.id,
       ),
-      env.DB.prepare(
-        "INSERT INTO commands (id, relay_id, type, payload, status, attempts, created_at) VALUES (?, ?, ?, ?, 'pending', 0, ?)",
-      ).bind(crypto.randomUUID(), s.relay_id, s.type, s.payload, nowSec),
+      commandInsert(env.DB, crypto.randomUUID(), s.relay_id, s.type, s.payload, nowSec),
     );
   }
   if (statements.length > 0) await env.DB.batch(statements);

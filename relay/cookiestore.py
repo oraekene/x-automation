@@ -53,7 +53,15 @@ class CookieStore:
         if not self.key_path.exists():
             return Fernet(self._create_key())
         try:
-            return Fernet(self.key_path.read_text(encoding="utf-8").strip())
+            key = self.key_path.read_text(encoding="utf-8").strip()
+        except OSError as e:
+            raise CookieStoreError(f"cannot read key file {self.key_path}") from e
+        if os.name == "posix":
+            # Enforce the same 0600 the create path sets: a restored or copied
+            # key must not keep looser permissions.
+            os.chmod(self.key_path, 0o600)
+        try:
+            return Fernet(key)
         except ValueError as e:
             raise CookieStoreError(f"invalid key file {self.key_path}") from e
 

@@ -80,6 +80,21 @@ class TestErrorTaxonomy:
     def test_success_returns_none(self):
         assert xclient.classify_response(200, {"data": {}}) is None
 
+    def test_non_json_200_named_as_auth_wall(self):
+        session = FakeSession((200, b"<!doctype html><title>Log in to X</title>"))
+        with pytest.raises(xclient.XAuthError):
+            xclient.whoami(auth_session(screen_name="alice"), http_session=session)
+
+    def test_non_json_error_status_is_transient(self):
+        session = FakeSession((502, b"Bad Gateway"))
+        with pytest.raises(xclient.XTransientError):
+            xclient.whoami(
+                auth_session(screen_name="alice"),
+                http_session=session,
+                max_attempts=1,
+                sleep=lambda _: None,
+            )
+
 
 class TestBackoffAndPacing:
     def test_jitter_off_gives_exponential(self):

@@ -27,14 +27,6 @@ async function enqueue(
   return command_id;
 }
 
-async function poll(
-  mf: Miniflare,
-  relayId: string,
-  token: string,
-): Promise<{ id: string; type: string; payload: unknown }[]> {
-  return pollCommands(mf, relayId, token);
-}
-
 describe("relay pairing", () => {
   it("creates a pending relay with a pairing code", async () => {
     const mf = await makeWorker();
@@ -136,14 +128,14 @@ describe("command channel", () => {
       const { relay_id, token } = await createAndPair(mf);
       const commandId = await enqueue(mf, relay_id, "echo", { message: "hello" });
 
-      const got = await poll(mf, relay_id, token);
+      const got = await pollCommands(mf, relay_id, token);
       expect(got).toHaveLength(1);
       expect(got[0].id).toBe(commandId);
       expect(got[0].type).toBe("echo");
       expect(got[0].payload).toEqual({ message: "hello" });
 
       // A second poll must be empty: the command was claimed.
-      const second = await poll(mf, relay_id, token);
+      const second = await pollCommands(mf, relay_id, token);
       expect(second).toHaveLength(0);
     } finally {
       await mf.dispose();
@@ -155,7 +147,7 @@ describe("command channel", () => {
     try {
       const { relay_id, token } = await createAndPair(mf);
       const commandId = await enqueue(mf, relay_id, "echo", { message: "hi" });
-      await poll(mf, relay_id, token);
+      await pollCommands(mf, relay_id, token);
 
       const res = await mf.dispatchFetch(`http://localhost/api/relays/${relay_id}/results`, {
         method: "POST",
@@ -189,7 +181,7 @@ describe("command channel", () => {
       expect(before.relays[0].queued).toBe(3);
       // Relay comes online: all three queued commands are delivered in order and
       // still counted as backlog while claimed-but-unreported.
-      const got = await poll(mf, relay_id, token);
+      const got = await pollCommands(mf, relay_id, token);
       expect(got.map((c) => c.id)).toEqual(ids);
       const after = await dashboard(mf, "alice@example.com");
       expect(after.relays[0].queued).toBe(3);
@@ -204,13 +196,13 @@ describe("command channel", () => {
     try {
       const { relay_id, token } = await createAndPair(mf);
       await enqueue(mf, relay_id, "echo", {});
-      await poll(mf, relay_id, token);
+      await pollCommands(mf, relay_id, token);
 
       // Simulate a crashed relay: backdate the claim past the lease window.
       const db = await mf.getD1Database("DB");
       await db.prepare("UPDATE commands SET claimed_at = ?").bind(Math.floor(Date.now() / 1000) - 601).run();
 
-      const got = await poll(mf, relay_id, token);
+      const got = await pollCommands(mf, relay_id, token);
       expect(got).toHaveLength(1);
     } finally {
       await mf.dispose();

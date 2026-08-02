@@ -210,7 +210,7 @@ def make_session(impersonate: bool = True) -> Session:
     if impersonate:
         try:
             return CurlCffiSession()
-        except (ImportError, ModuleNotFoundError):
+        except ImportError:
             pass
     return StdlibSession()
 
@@ -254,6 +254,10 @@ class XClient:
         error = classify_response(status, payload)
         if error is not None:
             raise error
+        if payload is None and status == 200:
+            # X often serves an HTML logged-out page at HTTP 200 to a dead
+            # session; name it an auth failure, not a mystery success.
+            raise XAuthError("X returned a non-JSON 200 (likely a logged-out page)")
         return payload
 
 

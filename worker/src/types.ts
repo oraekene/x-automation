@@ -20,6 +20,16 @@ export type ScheduleRow = {
   created_at: number;
 };
 
+export type DueScheduleRow = {
+  id: string;
+  relay_id: string;
+  type: string;
+  payload: string;
+  interval_minutes: number;
+  timezone: string;
+  next_run_at: number;
+};
+
 export type RelayRow = {
   id: string;
   user_id: string;
