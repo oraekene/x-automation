@@ -4,13 +4,29 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-function wranglerConfig(): { compatibility_date: string; compatibility_flags: string[] } {
-  const raw = readFileSync(fileURLToPath(new URL("../wrangler.jsonc", import.meta.url)), "utf-8");
+type WranglerConfig = {
+  compatibility_date: string;
+  compatibility_flags: string[];
+};
+
+const configSchema: Record<keyof WranglerConfig, string> = {
+  compatibility_date: "string",
+  compatibility_flags: "string[]",
+};
+
+function wranglerConfig(): WranglerConfig {
+  const raw = readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf-8");
   const stripped = raw
     .split("\n")
     .filter((line) => !line.trim().startsWith("//"))
     .join("\n");
-  return JSON.parse(stripped);
+  const parsed = JSON.parse(stripped) as Record<keyof WranglerConfig, unknown>;
+  for (const [key, expected] of Object.entries(configSchema)) {
+    const value = parsed[key as keyof WranglerConfig];
+    const ok = expected === "string" ? typeof value === "string" : Array.isArray(value);
+    if (!ok) throw new Error(`wrangler.jsonc is missing ${expected} field "${key}"`);
+  }
+  return parsed as WranglerConfig;
 }
 
 async function bundleWorker(): Promise<string> {
