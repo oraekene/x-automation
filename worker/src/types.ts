@@ -1,5 +1,8 @@
 export type Env = {
   DB: D1Database;
+  ACCESS_TEAM?: string;
+  ACCESS_AUD?: string;
+  AUTH_DEV?: string;
 };
 
 export type RelayRow = {

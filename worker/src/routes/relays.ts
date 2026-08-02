@@ -1,8 +1,8 @@
 import { Hono, type Context } from "hono";
 import type { Env, RelayRow } from "../types";
 import { hashToken, nowSeconds, pairingCode } from "../lib/crypto";
+import { getUser } from "../auth";
 
-const SEEDED_USER_ID = "seeded-superuser";
 const CLAIM_LEASE_S = 600;
 const PAIRING_TTL_S = 24 * 60 * 60;
 const MAX_POLL_BATCH = 20;
@@ -32,13 +32,15 @@ function safeParse(s: string): unknown {
 }
 
 relayRoutes.post("/", async (c) => {
+  const user = await getUser(c);
+  if (!user) return c.json({ error: "unauthorized" }, 401);
   const body = (await c.req.json().catch(() => ({}))) as { name?: string };
   const id = crypto.randomUUID();
   const pairing = pairingCode();
   await c.env.DB.prepare(
     "INSERT INTO relays (id, user_id, name, status, pairing_code_hash, created_at) VALUES (?, ?, ?, 'pending', ?, ?)",
   )
-    .bind(id, SEEDED_USER_ID, body.name ?? "relay", await hashToken(pairing), nowSeconds())
+    .bind(id, user.id, body.name ?? "relay", await hashToken(pairing), nowSeconds())
     .run();
   return c.json({ relay_id: id, pairing_code: pairing }, 201);
 });
@@ -72,7 +74,13 @@ relayRoutes.post("/pair", async (c) => {
 });
 
 relayRoutes.post("/:id/commands", async (c) => {
+  const user = await getUser(c);
+  if (!user) return c.json({ error: "unauthorized" }, 401);
   const id = c.req.param("id");
+  const owned = await c.env.DB.prepare("SELECT id FROM relays WHERE id = ? AND user_id = ?")
+    .bind(id, user.id)
+    .first();
+  if (!owned) return c.json({ error: "not found" }, 404);
   const body = (await c.req.json().catch(() => ({}))) as { type?: string; payload?: unknown };
   if (!body.type) return c.json({ error: "type required" }, 400);
   const commandId = crypto.randomUUID();
@@ -136,14 +144,18 @@ relayRoutes.post("/:id/results", async (c) => {
 });
 
 relayRoutes.get("/dashboard", async (c) => {
+  const user = await getUser(c);
+  if (!user) return c.json({ error: "unauthorized" }, 401);
   const relays = (await c.env.DB.prepare(
     `SELECT id, name, status, last_seen_at, created_at,
        (SELECT COUNT(*) FROM commands WHERE relay_id = relays.id AND status IN ('pending', 'in_flight')) AS queued,
        (SELECT COUNT(*) FROM commands WHERE relay_id = relays.id AND status = 'done') AS done,
        (SELECT COUNT(*) FROM commands WHERE relay_id = relays.id AND status = 'failed') AS failed
      FROM relays
+     WHERE user_id = ?
      ORDER BY created_at DESC`,
   )
+    .bind(user.id)
     .all()) as unknown as {
     results: Array<{
       id: string;

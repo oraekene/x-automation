@@ -11,7 +11,8 @@
     "db:migrate": "wrangler d1 migrations apply x-automation"
   },
   "dependencies": {
-    "hono": "^4.6.0"
+    "hono": "^4.6.0",
+    "jose": "^6.2.7"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250701.0",

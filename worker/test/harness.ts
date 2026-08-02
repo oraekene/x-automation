@@ -64,15 +64,18 @@ async function bundleWorker(): Promise<string> {
 }
 
 // Build the worker, apply the real migrations, and return a live Miniflare.
-export async function makeWorker(): Promise<Miniflare> {
+export async function makeWorker(opts?: { authDev?: boolean }): Promise<Miniflare> {
   const code = await bundleWorker();
   const cfg = wranglerConfig();
+  const bindings: Record<string, string> = {};
+  if (opts?.authDev !== false) bindings.AUTH_DEV = "1";
   const mf = new Miniflare({
     modules: true,
     script: code,
     compatibilityDate: cfg.compatibility_date,
     compatibilityFlags: cfg.compatibility_flags,
     d1Databases: ["DB"],
+    bindings,
   });
   const db = await mf.getD1Database("DB");
   for (const migration of migrations()) {
@@ -83,14 +86,20 @@ export async function makeWorker(): Promise<Miniflare> {
   return mf;
 }
 
-// Pair a relay and return { relay_id, token }.
+export function devJwt(email: string): string {
+  const b64 = Buffer.from(JSON.stringify({ email })).toString("base64url");
+  return `header.${b64}.signature`;
+}
+
+// Pair a relay created by the given user and return { relay_id, token }.
 export async function createAndPair(
   mf: Miniflare,
   name = "laptop",
+  email = "alice@example.com",
 ): Promise<{ relay_id: string; token: string }> {
   const created = await mf.dispatchFetch("http://localhost/api/relays", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "cf-access-jwt-assertion": devJwt(email) },
     body: JSON.stringify({ name }),
   });
   if (created.status !== 201) throw new Error(`create relay failed: ${await created.text()}`);

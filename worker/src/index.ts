@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { Env } from "./types";
 import { relayRoutes } from "./routes/relays";
 import { PAGE } from "./dashboard";
+import { getUser } from "./auth";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -17,6 +18,10 @@ app.get("/health", async (c) => {
 
 app.route("/api/relays", relayRoutes);
 
-app.get("/", (c) => c.html(PAGE));
+app.get("/", async (c) => {
+  const user = await getUser(c);
+  if (!user) return c.json({ error: "unauthorized" }, 401);
+  return c.html(PAGE);
+});
 
 export default app;

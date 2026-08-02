@@ -7,10 +7,19 @@
   //
   // Cron triggers (tick/maintenance/budget-reset) arrive in ticket 04 — do not
   // declare them here until the scheduled handler exists.
+  //
+  // Dashboard auth (ticket 03): set ACCESS_TEAM and ACCESS_AUD as worker
+  // secrets/plaintext vars so getUser() verifies Cloudflare Access JWTs.
+  // Never set AUTH_DEV in production (it trusts unsigned tokens).
   "name": "x-automation-worker",
   "compatibility_date": "2025-07-18",
   "compatibility_flags": ["nodejs_compat"],
   "main": "src/index.ts",
+  "vars": {
+    "ACCESS_TEAM": "",
+    "ACCESS_AUD": "",
+    "AUTH_DEV": ""
+  },
   "d1_databases": [
     {
       "binding": "DB",
