@@ -7,6 +7,10 @@ name = "x-automation-relay"
 version = "0.1.0"
 requires-python = ">=3.11"
 description = "Host-agnostic relay for the X Automation Tool"
+dependencies = [
+  "cryptography>=42",
+  "curl_cffi>=0.7",
+]
 
 [project.scripts]
 relay = "relay:main"

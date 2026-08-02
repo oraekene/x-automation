@@ -2,9 +2,11 @@
 
 Polls the Worker command channel, executes commands locally, and reports
 outcomes. Pairing binds this process to a user via a one-time pairing code.
+`cookies set` persists the X session encrypted at rest; `whoami` proves the
+session authenticates against X.
 
-Ticket 02 scope: pairing, poll, execute echo, report results.
-Later tickets add the cookie store and X GraphQL client.
+Ticket 05 scope: cookie store + X transport. Command execution over X
+(search/post/reply/quote) arrives in tickets 06-07.
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 import time
 import urllib.error
@@ -20,10 +23,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+import cookiestore
+import xclient
+
 log = logging.getLogger("relay")
 
 DEFAULT_POLL_INTERVAL_S = 5.0
 DEFAULT_STATE_FILE = "relay-state.json"
+DEFAULT_COOKIE_STORE = "x-cookies.bin"
 
 COMMANDS_PATH = "/api/relays/{relay_id}/commands"
 RESULTS_PATH = "/api/relays/{relay_id}/results"
@@ -179,6 +186,22 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     run_p.add_argument("--poll-interval", type=float, default=DEFAULT_POLL_INTERVAL_S, help="seconds between polls")
     run_p.add_argument("--verbose", action="store_true")
 
+    cookies_p = subparsers.add_parser("cookies", help="manage the encrypted X cookie store")
+    cookies_sub = cookies_p.add_subparsers(dest="cookies_command", required=True)
+    set_p = cookies_sub.add_parser("set", help="persist an X session (auth_token + ct0) encrypted at rest")
+    set_p.add_argument("--store", default=DEFAULT_COOKIE_STORE, help="cookie store file")
+    set_p.add_argument("--auth-token", default=None, help="X session auth_token cookie (or X_AUTH_TOKEN env)")
+    set_p.add_argument("--ct0", default=None, help="X session ct0 cookie (or X_CT0 env)")
+    set_p.add_argument("--screen-name", default=None, help="account screen name to persist with the session")
+    set_p.add_argument("--verbose", action="store_true")
+
+    whoami_p = subparsers.add_parser("whoami", help="verify the stored session against X and print the account")
+    whoami_p.add_argument("--store", default=DEFAULT_COOKIE_STORE, help="cookie store file")
+    whoami_p.add_argument("--screen-name", default=None, help="override the persisted screen name")
+    whoami_p.add_argument("--host", default="https://x.com", help="X host (for tests)")
+    whoami_p.add_argument("--max-attempts", type=int, default=3, help="transient retries before giving up")
+    whoami_p.add_argument("--verbose", action="store_true")
+
     return parser.parse_args(argv)
 
 
@@ -203,7 +226,26 @@ def main(argv: list[str] | None = None) -> int:
             config = RelayConfig(poll_interval_s=args.poll_interval)
             log.info("starting, relay_id=%s poll_interval=%ss", state.relay_id, config.poll_interval_s)
             run_loop(state, config=config)
-    except RelayError as e:
+        elif args.command == "cookies" and args.cookies_command == "set":
+            auth_token = args.auth_token or os.environ.get("X_AUTH_TOKEN")
+            ct0 = args.ct0 or os.environ.get("X_CT0")
+            if not auth_token or not ct0:
+                raise RelayError("pass --auth-token/--ct0 or set X_AUTH_TOKEN/X_CT0")
+            session = xclient.XSession(auth_token=auth_token, ct0=ct0, screen_name=args.screen_name)
+            store = cookiestore.CookieStore(args.store)
+            store.save(session.to_mapping())
+            log.info("saved X session encrypted at rest to %s", args.store)
+        elif args.command == "whoami":
+            session = xclient.XSession.from_mapping(cookiestore.CookieStore(args.store).load())
+            viewer = xclient.whoami(
+                session,
+                host=args.host,
+                screen_name=args.screen_name,
+                max_attempts=args.max_attempts,
+                pacer=xclient.Pacer(),
+            )
+            print(f"authenticated: rest_id={viewer['rest_id']} screen_name={viewer['screen_name']} name={viewer['name']}")
+    except (RelayError, cookiestore.CookieStoreError, xclient.XError) as e:
         log.error("%s", e)
         return 1
     except KeyboardInterrupt:
