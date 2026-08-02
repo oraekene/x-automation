@@ -1,7 +1,6 @@
 {
   "name": "x-automation-worker",
-  "compatibility_date": "2026-01-01",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_date": "2025-07-18",
   "main": "src/index.ts",
   "d1_databases": [
     {
@@ -11,20 +10,6 @@
       "migrations_dir": "migrations"
     }
   ],
-  "triggers": {
-    "crons": [
-      {
-        "cron": "*/1 * * * *",
-        "name": "tick"
-      },
-      {
-        "cron": "0 * * * *",
-        "name": "maintenance"
-      },
-      {
-        "cron": "0 0 * * *",
-        "name": "budget-reset"
-      }
-    ]
-  }
+  "//": "Provision the real database before first deploy: `npm run db:create`, then `npm run db:migrate`, then paste the returned database_id above.",
+  "//crons": "Cron triggers (tick/maintenance/budget-reset) arrive in ticket 04 — do not declare them here until the scheduled handler exists."
 }

@@ -23,7 +23,7 @@ async function makeWorker(sql: string): Promise<Miniflare> {
   const mf = new Miniflare({
     modules: true,
     script: code,
-    compatibilityDate: "2024-12-30",
+    compatibilityDate: "2025-07-18",
     compatibilityFlags: ["nodejs_compat"],
     d1Databases: ["DB"],
   });

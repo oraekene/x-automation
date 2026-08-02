@@ -4,4 +4,5 @@ __pycache__/
 node_modules/
 worker/.wrangler/
 worker/dist/
+worker/.dev.vars
 .pytest_cache/

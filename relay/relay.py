@@ -13,7 +13,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable
 
 log = logging.getLogger("relay")
@@ -26,12 +26,11 @@ HEALTH_PATH = "/health"
 class RelayConfig:
     base_url: str
     poll_interval_s: float = DEFAULT_POLL_INTERVAL_S
-    headers: dict[str, str] = field(default_factory=dict)
 
 
-def fetch_json(url: str, headers: dict[str, str] | None = None) -> dict:
+def fetch_json(url: str) -> dict:
     """GET a URL and parse JSON; raises RelayError on failure."""
-    req = urllib.request.Request(url, headers=headers or {})
+    req = urllib.request.Request(url)
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             return json.loads(resp.read().decode("utf-8"))
@@ -47,10 +46,10 @@ class RelayError(Exception):
     """A failure reaching or interpreting the Worker."""
 
 
-def check_health(base_url: str, headers: dict[str, str]) -> bool:
-    """Return True when the Worker reports healthy and D1 reachable."""
+def check_health(base_url: str) -> bool:
+    """Return True when the Worker reports ok."""
     try:
-        body = fetch_json(f"{base_url.rstrip('/')}{HEALTH_PATH}", headers)
+        body = fetch_json(f"{base_url.rstrip('/')}{HEALTH_PATH}")
         return body.get("status") == "ok"
     except RelayError:
         return False
@@ -65,7 +64,7 @@ def run(
 ) -> None:
     """Poll the Worker health endpoint until should_stop() is True."""
     while not should_stop():
-        if check_health(config.base_url, config.headers):
+        if check_health(config.base_url):
             on_status("connected")
         else:
             on_status("unreachable")
