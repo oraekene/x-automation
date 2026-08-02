@@ -1,8 +1,10 @@
 import { Hono } from "hono";
 import type { Env } from "./types";
 import { relayRoutes } from "./routes/relays";
+import { scheduleRoutes } from "./routes/schedules";
 import { PAGE } from "./dashboard";
 import { getUser } from "./auth";
+import { runScheduled } from "./scheduled";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -17,6 +19,7 @@ app.get("/health", async (c) => {
 });
 
 app.route("/api/relays", relayRoutes);
+app.route("/api/schedules", scheduleRoutes);
 
 app.get("/", async (c) => {
   const user = await getUser(c);
@@ -24,4 +27,7 @@ app.get("/", async (c) => {
   return c.html(PAGE);
 });
 
-export default app;
+export default {
+  fetch: app.fetch,
+  scheduled: runScheduled,
+} satisfies ExportedHandler<Env>;

@@ -5,6 +5,21 @@ export type Env = {
   AUTH_DEV?: string;
 };
 
+export type ScheduleRow = {
+  id: string;
+  user_id: string;
+  relay_id: string;
+  name: string;
+  type: string;
+  payload: string;
+  status: string;
+  interval_minutes: number;
+  timezone: string;
+  next_run_at: number;
+  last_run_at: number | null;
+  created_at: number;
+};
+
 export type RelayRow = {
   id: string;
   user_id: string;

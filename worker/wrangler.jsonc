@@ -5,8 +5,8 @@
   // then paste the returned database_id from `wrangler d1 create` into
   // d1_databases[0].database_id below.
   //
-  // Cron triggers (tick/maintenance/budget-reset) arrive in ticket 04 — do not
-  // declare them here until the scheduled handler exists.
+  // Cron triggers: tick (per-minute) drives automation; maintenance (hourly)
+  // sweeps stale commands; a third slot is reserved for daily budget resets.
   //
   // Dashboard auth (ticket 03): set ACCESS_TEAM and ACCESS_AUD as worker
   // secrets/plaintext vars so getUser() verifies Cloudflare Access JWTs.
@@ -15,6 +15,12 @@
   "compatibility_date": "2025-07-18",
   "compatibility_flags": ["nodejs_compat"],
   "main": "src/index.ts",
+  "triggers": {
+    "crons": [
+      { "cron": "* * * * *", "name": "tick" },
+      { "cron": "0 * * * *", "name": "maintenance" }
+    ]
+  },
   "vars": {
     "ACCESS_TEAM": "",
     "ACCESS_AUD": "",

@@ -6,8 +6,21 @@
 
 **Status:** ready-for-agent
 
-- [ ] Schedules table holds per-user jobs with next_run_at and status
-- [ ] Per-minute tick cron picks up due jobs and fans them out (commands enqueued)
-- [ ] next_run_at recomputed in the user's timezone after each run
-- [ ] Maintenance cron sweep exists and processes conversation timeouts and stale commands
-- [ ] End-to-end demo: schedule a job via API → tick enqueues → relay executes → result recorded
+- [x] Schedules table holds per-user jobs with next_run_at and status
+- [x] Per-minute tick cron picks up due jobs and fans them out (commands enqueued)
+- [x] next_run_at recomputed in the user's timezone after each run
+- [ ] Maintenance cron sweep exists and processes conversation timeouts and stale commands (stale claims done; conversation timeouts deferred — see Notes)
+- [x] End-to-end demo: schedule a job via API → tick enqueues → relay executes → result recorded
+
+## Notes (ticket 04 done, @ 2026-08-02)
+
+- Conversation-timeout half of the maintenance sweep is **deferred**: it runs
+  in `src/scheduled.ts maintenance()` but only the stale-command sweep exists.
+  Conversation timeouts need the `conversations` table, which arrives with the
+  conversations/multi-turn ticket — the maintenance handler is already the join
+  point for it.
+- "Daily at 9am" wall-clock anchoring (spec user story 29) is **not covered** by
+  `interval_minutes`-based scheduling. Interval cadence ships now; an
+  anchor/cron-expression form is a follow-up ticket.
+- Cron slot 3 (daily budget resets) stays reserved in `wrangler.jsonc` comments
+  until budgets/daily resets land.

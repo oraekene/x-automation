@@ -91,6 +91,39 @@ export function devJwt(email: string): string {
   return `header.${b64}.signature`;
 }
 
+export function nowSeconds(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
+// Headers for a signed-in user (ticket 03 auth). `json` selects the content-type.
+export function userHeaders(email = "alice@example.com", json = true): Record<string, string> {
+  return {
+    "cf-access-jwt-assertion": devJwt(email),
+    ...(json ? { "content-type": "application/json" } : {}),
+  };
+}
+
+export function bearerHeaders(token: string, json = true): Record<string, string> {
+  return {
+    authorization: `Bearer ${token}`,
+    ...(json ? { "content-type": "application/json" } : {}),
+  };
+}
+
+// Relay polls its command queue; claims delivered commands as in_flight.
+export async function pollCommands(
+  mf: Miniflare,
+  relayId: string,
+  token: string,
+): Promise<{ id: string; type: string; payload: unknown }[]> {
+  const res = await mf.dispatchFetch(`http://localhost/api/relays/${relayId}/commands`, {
+    headers: bearerHeaders(token, false),
+  });
+  if (res.status !== 200) throw new Error(`poll failed: ${await res.text()}`);
+  const body = (await res.json()) as { commands: { id: string; type: string; payload: unknown }[] };
+  return body.commands;
+}
+
 // Pair a relay created by the given user and return { relay_id, token }.
 export async function createAndPair(
   mf: Miniflare,

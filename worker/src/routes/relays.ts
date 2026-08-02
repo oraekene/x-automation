@@ -1,6 +1,7 @@
 import { Hono, type Context } from "hono";
 import type { Env, RelayRow } from "../types";
 import { hashToken, nowSeconds, pairingCode } from "../lib/crypto";
+import { relayOwnedBy } from "../lib/ownership";
 import { getUser } from "../auth";
 
 const CLAIM_LEASE_S = 600;
@@ -77,10 +78,7 @@ relayRoutes.post("/:id/commands", async (c) => {
   const user = await getUser(c);
   if (!user) return c.json({ error: "unauthorized" }, 401);
   const id = c.req.param("id");
-  const owned = await c.env.DB.prepare("SELECT id FROM relays WHERE id = ? AND user_id = ?")
-    .bind(id, user.id)
-    .first();
-  if (!owned) return c.json({ error: "not found" }, 404);
+  if (!(await relayOwnedBy(c.env.DB, id, user.id))) return c.json({ error: "not found" }, 404);
   const body = (await c.req.json().catch(() => ({}))) as { type?: string; payload?: unknown };
   if (!body.type) return c.json({ error: "type required" }, 400);
   const commandId = crypto.randomUUID();

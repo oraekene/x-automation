@@ -1,17 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Miniflare } from "miniflare";
-import { createAndPair, devJwt, makeWorker } from "./harness";
-
-function bearerHeaders(token: string): Record<string, string> {
-  return { authorization: `Bearer ${token}`, "content-type": "application/json" };
-}
-
-function userHeaders(email = "alice@example.com", json = true): Record<string, string> {
-  return {
-    "cf-access-jwt-assertion": devJwt(email),
-    ...(json ? { "content-type": "application/json" } : {}),
-  };
-}
+import { bearerHeaders, createAndPair, makeWorker, pollCommands, userHeaders } from "./harness";
 
 async function dashboard(mf: Miniflare, email: string): Promise<{ relays: { id?: string; status: string; online: boolean; queued: number; done: number; failed: number }[] }> {
   const res = await mf.dispatchFetch("http://localhost/api/relays/dashboard", {
@@ -38,13 +27,12 @@ async function enqueue(
   return command_id;
 }
 
-async function poll(mf: Miniflare, relayId: string, token: string): Promise<{ id: string; type: string; payload: unknown }[]> {
-  const res = await mf.dispatchFetch(`http://localhost/api/relays/${relayId}/commands`, {
-    headers: bearerHeaders(token),
-  });
-  expect(res.status).toBe(200);
-  const body = (await res.json()) as { commands: { id: string; type: string; payload: unknown }[] };
-  return body.commands;
+async function poll(
+  mf: Miniflare,
+  relayId: string,
+  token: string,
+): Promise<{ id: string; type: string; payload: unknown }[]> {
+  return pollCommands(mf, relayId, token);
 }
 
 describe("relay pairing", () => {
