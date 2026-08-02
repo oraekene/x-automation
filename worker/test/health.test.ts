@@ -1,7 +1,17 @@
 import { build } from "esbuild";
 import { Miniflare } from "miniflare";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+
+function wranglerConfig(): { compatibility_date: string; compatibility_flags: string[] } {
+  const raw = readFileSync(fileURLToPath(new URL("../wrangler.jsonc", import.meta.url)), "utf-8");
+  const stripped = raw
+    .split("\n")
+    .filter((line) => !line.trim().startsWith("//"))
+    .join("\n");
+  return JSON.parse(stripped);
+}
 
 async function bundleWorker(): Promise<string> {
   const result = await build({
@@ -20,11 +30,12 @@ async function bundleWorker(): Promise<string> {
 
 async function makeWorker(sql: string): Promise<Miniflare> {
   const code = await bundleWorker();
+  const cfg = wranglerConfig();
   const mf = new Miniflare({
     modules: true,
     script: code,
-    compatibilityDate: "2025-07-18",
-    compatibilityFlags: ["nodejs_compat"],
+    compatibilityDate: cfg.compatibility_date,
+    compatibilityFlags: cfg.compatibility_flags,
     d1Databases: ["DB"],
   });
   const db = await mf.getD1Database("DB");

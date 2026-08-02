@@ -1,6 +1,15 @@
 {
+  // Provision the real database before the first deploy:
+  //   npm run db:create
+  //   npm run db:migrate
+  // then paste the returned database_id from `wrangler d1 create` into
+  // d1_databases[0].database_id below.
+  //
+  // Cron triggers (tick/maintenance/budget-reset) arrive in ticket 04 — do not
+  // declare them here until the scheduled handler exists.
   "name": "x-automation-worker",
   "compatibility_date": "2025-07-18",
+  "compatibility_flags": ["nodejs_compat"],
   "main": "src/index.ts",
   "d1_databases": [
     {
@@ -9,7 +18,5 @@
       "database_id": "local-dev-placeholder",
       "migrations_dir": "migrations"
     }
-  ],
-  "//": "Provision the real database before first deploy: `npm run db:create`, then `npm run db:migrate`, then paste the returned database_id above.",
-  "//crons": "Cron triggers (tick/maintenance/budget-reset) arrive in ticket 04 — do not declare them here until the scheduled handler exists."
+  ]
 }
