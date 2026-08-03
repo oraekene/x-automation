@@ -1,4 +1,8 @@
 const MS_PER_MINUTE = 60_000;
+const MS_PER_DAY = 24 * 60 * MS_PER_MINUTE;
+
+// HH:MM for quiet-hours windows (single source, also used by validation).
+export const HHMM = /^\d{2}:\d{2}$/;
 
 export const DEFAULT_INTERVAL_MINUTES = 1440;
 
@@ -55,4 +59,26 @@ export function addIntervalInZone(atMs: number, intervalMinutes: number, timeZon
   const localNow = atMs + zoneOffsetMs(timeZone, atMs);
   const localNext = localNow + intervalMinutes * MS_PER_MINUTE;
   return localNext - zoneOffsetMs(timeZone, localNext);
+}
+
+// Is the given instant inside the quiet-hours window? `start > end` crosses
+// midnight. HH:MM is interpreted in the given zone.
+export function inQuietHours(nowMs: number, window: { start: string; end: string } | null, timeZone: string): boolean {
+  if (!window) return false;
+  const toMinute = (hhmm: string): number => {
+    const [h, m] = hhmm.split(":").map(Number);
+    return h * 60 + m;
+  };
+  const localMs = nowMs + zoneOffsetMs(timeZone, nowMs);
+  const minuteOfDay = Math.floor((localMs % MS_PER_DAY) / MS_PER_MINUTE);
+  const start = toMinute(window.start);
+  const end = toMinute(window.end);
+  return start <= end ? minuteOfDay >= start && minuteOfDay < end : minuteOfDay >= start || minuteOfDay < end;
+}
+
+// The instant of the local day's start in the given zone (for budget counts).
+export function startOfDayInZone(nowMs: number, timeZone: string): number {
+  const localMs = nowMs + zoneOffsetMs(timeZone, nowMs);
+  const localDayStart = localMs - (localMs % MS_PER_DAY);
+  return localDayStart - zoneOffsetMs(timeZone, localDayStart);
 }

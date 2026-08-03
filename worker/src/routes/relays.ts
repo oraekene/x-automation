@@ -164,11 +164,24 @@ relayRoutes.post("/:id/results", async (c) => {
   return c.json({ updated });
 });
 
+relayRoutes.post("/:id/enabled", async (c) => {
+  const user = await getUser(c);
+  if (!user) return c.json({ error: "unauthorized" }, 401);
+  const id = c.req.param("id");
+  if (!(await relayOwnedBy(c.env.DB, id, user.id))) return c.json({ error: "not found" }, 404);
+  const body = (await c.req.json().catch(() => ({}))) as { enabled?: boolean };
+  if (typeof body.enabled !== "boolean") return c.json({ error: "enabled must be a boolean" }, 400);
+  await c.env.DB.prepare("UPDATE relays SET enabled = ? WHERE id = ?")
+    .bind(body.enabled ? 1 : 0, id)
+    .run();
+  return c.json({ relay_id: id, enabled: body.enabled });
+});
+
 relayRoutes.get("/dashboard", async (c) => {
   const user = await getUser(c);
   if (!user) return c.json({ error: "unauthorized" }, 401);
   const relays = (await c.env.DB.prepare(
-    `SELECT id, name, status, last_seen_at, created_at,
+    `SELECT id, name, status, enabled, last_seen_at, created_at,
        (SELECT COUNT(*) FROM commands WHERE relay_id = relays.id AND status IN ('pending', 'in_flight')) AS queued,
        (SELECT COUNT(*) FROM commands WHERE relay_id = relays.id AND status = 'done') AS done,
        (SELECT COUNT(*) FROM commands WHERE relay_id = relays.id AND status = 'failed') AS failed
@@ -182,6 +195,7 @@ relayRoutes.get("/dashboard", async (c) => {
       id: string;
       name: string;
       status: string;
+      enabled: number;
       last_seen_at: number | null;
       created_at: number;
       queued: number;
@@ -195,6 +209,7 @@ relayRoutes.get("/dashboard", async (c) => {
       id: r.id,
       name: r.name,
       status: r.status,
+      enabled: r.enabled !== 0,
       online: r.status === "active" && r.last_seen_at !== null && r.last_seen_at > onlineAfter,
       queued: r.queued,
       done: r.done,

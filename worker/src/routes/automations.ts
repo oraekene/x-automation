@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { AutomationRow, Env, SearchCriteria, TargetingProfile } from "../types";
 import { nowSeconds } from "../lib/crypto";
-import { addIntervalInZone, coerceIntervalMinutes, isValidTimeZone } from "../lib/time";
+import { addIntervalInZone, coerceIntervalMinutes, isValidTimeZone, HHMM } from "../lib/time";
 import { safeParse } from "../lib/json";
 import { relayOwnedBy } from "../lib/ownership";
 import { getUser } from "../auth";
@@ -55,6 +55,51 @@ function validTargetingProfile(raw: unknown): raw is TargetingProfile {
   return true;
 }
 
+// Validate the Stage-2 heuristic filter configuration (ticket 09). Coercion to
+// safe values happens at parse time in lib/funnel; here we only reject shapes
+// the API should not accept.
+function validRules(raw: unknown): boolean {
+  if (raw === undefined || raw === null) return true;
+  if (typeof raw !== "object") return false;
+  const r = raw as Record<string, unknown>;
+  if (r.target_size !== undefined && (typeof r.target_size !== "number" || !(r.target_size >= 1))) return false;
+  if (r.weights !== undefined) {
+    if (typeof r.weights !== "object" || r.weights === null) return false;
+    const w = r.weights as Record<string, unknown>;
+    for (const key of ["engagement", "freshness", "lang_bonus"] as const) {
+      if (w[key] !== undefined && (typeof w[key] !== "number" || !(w[key] >= 0))) return false;
+    }
+  }
+  if (r.lang !== undefined && typeof r.lang !== "string") return false;
+  if (r.min_engagement !== undefined && (typeof r.min_engagement !== "number" || !(r.min_engagement >= 0))) return false;
+  if (r.max_age_days !== undefined && (typeof r.max_age_days !== "number" || !(r.max_age_days >= 0))) return false;
+  for (const key of ["allowlist", "blocklist"] as const) {
+    if (r[key] !== undefined && (!Array.isArray(r[key]) || (r[key] as unknown[]).some((v) => typeof v !== "string"))) {
+      return false;
+    }
+  }
+  if (r.max_per_author !== undefined && (typeof r.max_per_author !== "number" || !(r.max_per_author >= 1))) return false;
+  return true;
+}
+
+// Validate the Stage-4 budget configuration (ticket 09).
+function validBudgets(raw: unknown): boolean {
+  if (raw === undefined || raw === null) return true;
+  if (typeof raw !== "object") return false;
+  const b = raw as Record<string, unknown>;
+  for (const key of ["max_posts_per_day", "max_replies_per_day"] as const) {
+    if (b[key] !== undefined && (typeof b[key] !== "number" || !(b[key] >= 0))) return false;
+  }
+  if (b.quiet_hours !== undefined) {
+    if (typeof b.quiet_hours !== "object" || b.quiet_hours === null) return false;
+    const q = b.quiet_hours as Record<string, unknown>;
+    if (typeof q.start !== "string" || typeof q.end !== "string" || !HHMM.test(q.start) || !HHMM.test(q.end)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 automationRoutes.post("/", async (c) => {
   const user = await getUser(c);
   if (!user) return c.json({ error: "unauthorized" }, 401);
@@ -63,6 +108,8 @@ automationRoutes.post("/", async (c) => {
     name?: string;
     search_criteria?: unknown;
     targeting?: unknown;
+    rules?: unknown;
+    budgets?: unknown;
     interval_minutes?: number;
     timezone?: string;
   };
@@ -76,6 +123,12 @@ automationRoutes.post("/", async (c) => {
   if (body.targeting !== undefined && !validTargetingProfile(body.targeting)) {
     return c.json({ error: "targeting needs keywords, a whole-number follower floor, strict booleans and a string location" }, 400);
   }
+  if (!validRules(body.rules)) {
+    return c.json({ error: "rules needs a positive target_size, non-negative weights/thresholds and string allow/blocklists" }, 400);
+  }
+  if (!validBudgets(body.budgets)) {
+    return c.json({ error: "budgets needs non-negative daily caps and HH:MM quiet hours" }, 400);
+  }
   const interval = coerceIntervalMinutes(body.interval_minutes);
   if (!interval.ok) return c.json({ error: "interval_minutes must be at least 1" }, 400);
   const timezone = body.timezone ?? "UTC";
@@ -85,8 +138,8 @@ automationRoutes.post("/", async (c) => {
   const nextRunAt = Math.floor(addIntervalInZone(Date.now(), interval.minutes, timezone) / 1000);
   const id = crypto.randomUUID();
   await c.env.DB.prepare(
-    `INSERT INTO automations (id, user_id, relay_id, name, status, search_criteria, targeting, interval_minutes, timezone, next_run_at, created_at)
-     VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO automations (id, user_id, relay_id, name, status, search_criteria, targeting, rules, budgets, interval_minutes, timezone, next_run_at, created_at)
+     VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       id,
@@ -95,6 +148,8 @@ automationRoutes.post("/", async (c) => {
       body.name ?? "automation",
       JSON.stringify(body.search_criteria),
       JSON.stringify(body.targeting ?? {}),
+      JSON.stringify(body.rules ?? {}),
+      JSON.stringify(body.budgets ?? {}),
       interval.minutes,
       timezone,
       nextRunAt,
@@ -120,6 +175,8 @@ automationRoutes.get("/", async (c) => {
       status: r.status,
       search_criteria: safeParse(r.search_criteria),
       targeting: safeParse(r.targeting) as TargetingProfile,
+      rules: safeParse(r.rules),
+      budgets: safeParse(r.budgets),
       interval_minutes: r.interval_minutes,
       timezone: r.timezone,
       next_run_at: r.next_run_at,

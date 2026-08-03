@@ -38,6 +38,7 @@ export type RelayRow = {
   pairing_code_hash: string;
   token_hash: string | null;
   last_seen_at: number | null;
+  enabled: number;
   created_at: number;
 };
 
@@ -49,6 +50,8 @@ export type AutomationRow = {
   status: string;
   search_criteria: string;
   targeting: string;
+  rules: string;
+  budgets: string;
   interval_minutes: number;
   timezone: string;
   next_run_at: number;
@@ -81,6 +84,20 @@ export type CandidateRow = {
   lang: string;
   source: "search" | "profile";
   found_at: number;
+};
+
+export type DecisionRow = {
+  id: string;
+  user_id: string;
+  relay_id: string;
+  automation_id: string;
+  candidate_id: string;
+  stage: "filter" | "guardrail";
+  decision: "keep" | "reject" | "block";
+  rule: string;
+  reason: string;
+  score: number;
+  acted_at: number;
 };
 
 export type SearchCriteria = {

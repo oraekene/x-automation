@@ -4,6 +4,7 @@ import { relayRoutes } from "./routes/relays";
 import { scheduleRoutes } from "./routes/schedules";
 import { automationRoutes } from "./routes/automations";
 import { candidateRoutes } from "./routes/candidates";
+import { funnelRoutes } from "./routes/funnel";
 import { PAGE } from "./dashboard";
 import { getUser } from "./auth";
 import { runScheduled } from "./scheduled";
@@ -24,6 +25,7 @@ app.route("/api/relays", relayRoutes);
 app.route("/api/schedules", scheduleRoutes);
 app.route("/api/automations", automationRoutes);
 app.route("/api/candidates", candidateRoutes);
+app.route("/api/funnel", funnelRoutes);
 
 app.get("/", async (c) => {
   const user = await getUser(c);
