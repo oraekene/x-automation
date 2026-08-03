@@ -5,6 +5,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import relay as relay_mod
+import xclient
 import xreader
 
 
@@ -138,6 +139,30 @@ def make_tweet(id="1", author="bob"):
     return xreader.Tweet(id=id, author=author, text="hello", created_at="", favorite_count=1, retweet_count=0, reply_count=0, lang="en")
 
 
+class FakeWriter:
+    """Fake write seam; returns a canned tweet id and records calls."""
+
+    def __init__(self, tweet_id="101", error=None):
+        self.tweet_id = tweet_id
+        self.error = error
+        self.calls = []
+
+    def _write(self, *call):
+        self.calls.append(call)
+        if self.error is not None:
+            raise self.error
+        return self.tweet_id
+
+    def post(self, text):
+        return self._write("post", text)
+
+    def reply(self, text, *, in_reply_to_tweet_id):
+        return self._write("reply", text, in_reply_to_tweet_id)
+
+    def quote(self, text, *, attachment_url):
+        return self._write("quote", text, attachment_url)
+
+
 def test_search_command_reports_tweets():
     reader = FakeReader(tweets=[make_tweet("1"), make_tweet("2")])
     result = relay_mod.execute_command(
@@ -187,6 +212,58 @@ def test_read_command_without_reader_fails_cleanly():
     assert "reader" in result["output"]["error"]
 
 
+def test_post_command_posts_plain_tweet():
+    writer = FakeWriter()
+    result = relay_mod.execute_command(
+        {"type": "post", "payload": {"text": "hello"}},
+        writer=writer,
+    )
+    assert result == {"ok": True, "output": {"tweet_id": "101"}}
+    assert writer.calls == [("post", "hello")]
+
+
+def test_reply_command_targets_tweet():
+    writer = FakeWriter()
+    result = relay_mod.execute_command(
+        {"type": "reply", "payload": {"text": "hi", "in_reply_to_tweet_id": "202"}},
+        writer=writer,
+    )
+    assert result == {"ok": True, "output": {"tweet_id": "101"}}
+    assert writer.calls == [("reply", "hi", "202")]
+
+
+def test_quote_command_attaches_url():
+    writer = FakeWriter()
+    result = relay_mod.execute_command(
+        {"type": "quote", "payload": {"text": "see", "attachment_url": "https://x.com/bob/status/202"}},
+        writer=writer,
+    )
+    assert result == {"ok": True, "output": {"tweet_id": "101"}}
+    assert writer.calls == [("quote", "see", "https://x.com/bob/status/202")]
+
+
+def test_write_command_without_writer_fails_cleanly():
+    result = relay_mod.execute_command({"type": "post", "payload": {"text": "hi"}})
+    assert result["ok"] is False
+    assert "writer" in result["output"]["error"]
+
+
+def test_write_command_missing_fields_fail_cleanly():
+    assert relay_mod.execute_command({"type": "post", "payload": {}})["ok"] is False
+    assert relay_mod.execute_command({"type": "reply", "payload": {"text": "hi"}})["ok"] is False
+    assert relay_mod.execute_command({"type": "quote", "payload": {"text": "hi"}})["ok"] is False
+
+
+def test_write_failure_reported_cleanly():
+    writer = FakeWriter(error=xclient.XRateLimitError("X is rate-limiting"))
+    result = relay_mod.execute_command(
+        {"type": "post", "payload": {"text": "hi"}},
+        writer=writer,
+    )
+    assert result["ok"] is False
+    assert "XRateLimitError" in result["output"]["error"]
+
+
 def test_run_once_routes_read_commands_through_reader():
     with serving(FakeWorker) as base:
         FakeWorker.commands = [
@@ -197,6 +274,21 @@ def test_run_once_routes_read_commands_through_reader():
         assert results == [
             {"command_id": "c10", "ok": True, "output": {"tweets": [make_tweet("3").as_mapping()]}},
             {"command_id": "c11", "ok": True, "output": {"echoed": "hi"}},
+        ]
+        assert FakeWorker.results == results
+
+
+def test_run_once_routes_write_commands_through_writer():
+    with serving(FakeWorker) as base:
+        FakeWorker.commands = [
+            {"id": "c20", "type": "post", "payload": {"text": "hello"}},
+            {"id": "c21", "type": "reply", "payload": {"text": "hi", "in_reply_to_tweet_id": "202"}},
+        ]
+        writer = FakeWriter()
+        results = relay_mod.run_once(state_for(base), writer=writer)
+        assert results == [
+            {"command_id": "c20", "ok": True, "output": {"tweet_id": "101"}},
+            {"command_id": "c21", "ok": True, "output": {"tweet_id": "101"}},
         ]
         assert FakeWorker.results == results
 

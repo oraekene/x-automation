@@ -5,8 +5,8 @@ outcomes. Pairing binds this process to a user via a one-time pairing code.
 `cookies set` persists the X session encrypted at rest; `whoami` proves the
 session authenticates against X.
 
-Ticket 05 scope: cookie store + X transport. Command execution over X
-(search/post/reply/quote) arrives in tickets 06-07.
+Ticket 05 scope: cookie store + X transport. Ticket 06: GraphQL reads
+(search/user_posts/profile). Ticket 07: GraphQL writes (post/reply/quote).
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from typing import Callable
 import cookiestore
 import xclient
 import xreader
+import xwriter
 
 log = logging.getLogger("relay")
 
@@ -126,13 +127,23 @@ def report_results(state: RelayState, results: list[dict]) -> dict:
     )
 
 
-def execute_command(command: dict, *, reader=None) -> dict:
+def _run_x_command(label: str, runner: Callable[[], dict]) -> dict:
+    """Run one X-backed command with the standard failure contract."""
+    try:
+        output = runner()
+        return {"ok": True, "output": output}
+    except (xclient.XError, xreader.QueryIdNotFoundError, ValueError) as e:
+        return {"ok": False, "output": {"error": f"{type(e).__name__}: {e}"}}
+
+
+def execute_command(command: dict, *, reader=None, writer=None) -> dict:
     """Run a single command locally; returns a result dict for the Worker.
 
-    ``reader`` is the injected read seam (an object with ``search``,
-    ``user_posts`` and ``profile`` methods) that executes X GraphQL reads;
-    production passes a real reader built from the cookie store. When None and
-    the command needs X, the command fails cleanly.
+    ``reader`` and ``writer`` are the injected X seams (an object with
+    ``search``/``user_posts``/``profile`` read methods, and one with
+    ``post``/``reply``/``quote`` write methods); production passes real ones
+    built from the cookie store. When None and the command needs X, the
+    command fails cleanly.
     """
     command_type = command.get("type")
     if command_type == "echo":
@@ -141,11 +152,15 @@ def execute_command(command: dict, *, reader=None) -> dict:
     if command_type in ("search", "user_posts", "profile"):
         if reader is None:
             return {"ok": False, "output": {"error": "X reader not configured"}}
-        try:
-            output = _run_read_command(reader, command_type, command.get("payload", {}))
-            return {"ok": True, "output": output}
-        except (xclient.XError, xreader.QueryIdNotFoundError, ValueError) as e:
-            return {"ok": False, "output": {"error": f"{type(e).__name__}: {e}"}}
+        return _run_x_command(
+            "reader", lambda: _run_read_command(reader, command_type, command.get("payload", {}))
+        )
+    if command_type in ("post", "reply", "quote"):
+        if writer is None:
+            return {"ok": False, "output": {"error": "X writer not configured"}}
+        return _run_x_command(
+            "writer", lambda: _run_write_command(writer, command_type, command.get("payload", {}))
+        )
     return {"ok": False, "output": {"error": f"unknown command type: {command_type!r}"}}
 
 
@@ -175,6 +190,23 @@ def _run_read_command(reader, command_type: str, payload: dict) -> dict:
     return {"profile": reader.profile(screen_name).as_mapping()}
 
 
+def _run_write_command(writer, command_type: str, payload: dict) -> dict:
+    text = payload.get("text")
+    if not text:
+        raise ValueError("a text is required")
+    if command_type == "post":
+        return {"tweet_id": writer.post(text)}
+    if command_type == "reply":
+        target = payload.get("in_reply_to_tweet_id")
+        if not target:
+            raise ValueError("an in_reply_to_tweet_id is required")
+        return {"tweet_id": writer.reply(text, in_reply_to_tweet_id=target)}
+    attachment_url = payload.get("attachment_url")
+    if not attachment_url:
+        raise ValueError("an attachment_url is required")
+    return {"tweet_id": writer.quote(text, attachment_url=attachment_url)}
+
+
 def make_reader(
     store: str | Path = DEFAULT_COOKIE_STORE,
     *,
@@ -187,12 +219,28 @@ def make_reader(
     return xreader.XReader.from_client(session, host=host)
 
 
-def run_once(state: RelayState, *, reader=None) -> list[dict]:
+def make_writer(
+    store: str | Path = DEFAULT_COOKIE_STORE,
+    *,
+    session: xclient.XSession | None = None,
+    host: str = "https://x.com",
+) -> xwriter.XWriter:
+    """Build the production write seam from the encrypted cookie store.
+
+    Writes carry human-like pacing: a jittered delay runs before each
+    CreateTweet so the bot does not fire tweets back-to-back.
+    """
+    if session is None:
+        session = xclient.XSession.from_mapping(cookiestore.CookieStore(store).load())
+    return xwriter.XWriter.from_client(session, host=host, pacer=xclient.Pacer())
+
+
+def run_once(state: RelayState, *, reader=None, writer=None) -> list[dict]:
     """Poll, execute, and report one round. Returns per-command results."""
     commands = poll_commands(state)
     results = []
     for command in commands:
-        outcome = execute_command(command, reader=reader)
+        outcome = execute_command(command, reader=reader, writer=writer)
         results.append({"command_id": command.get("id"), **outcome})
     if results:
         report_results(state, results)
@@ -207,12 +255,13 @@ def run_loop(
     on_status: Callable[[str], None] = lambda msg: log.info(msg),
     sleep: Callable[[float], None] = time.sleep,
     reader=None,
+    writer=None,
 ) -> None:
     """Poll the command channel until should_stop() is True."""
     interval = (config or RelayConfig()).poll_interval_s
     while not should_stop():
         try:
-            run_once(state, reader=reader)
+            run_once(state, reader=reader, writer=writer)
             on_status("connected")
         except RelayError:
             on_status("unreachable")
@@ -270,6 +319,26 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     search_p.add_argument("--max-pages", type=int, default=3, help="search pagination cap")
     search_p.add_argument("--verbose", action="store_true")
 
+    post_p = subparsers.add_parser("post", help="post a plain tweet (demo of the GraphQL write layer)")
+    post_p.add_argument("--store", default=DEFAULT_COOKIE_STORE, help="cookie store file")
+    post_p.add_argument("--host", default="https://x.com", help="X host (for tests)")
+    post_p.add_argument("text", help="tweet text")
+    post_p.add_argument("--verbose", action="store_true")
+
+    reply_p = subparsers.add_parser("reply", help="reply in-reply-to a target tweet")
+    reply_p.add_argument("--store", default=DEFAULT_COOKIE_STORE, help="cookie store file")
+    reply_p.add_argument("--host", default="https://x.com", help="X host (for tests)")
+    reply_p.add_argument("--reply-to", required=True, help="tweet id to reply in-reply-to")
+    reply_p.add_argument("text", help="reply text")
+    reply_p.add_argument("--verbose", action="store_true")
+
+    quote_p = subparsers.add_parser("quote", help="quote-tweet with the quoted tweet attached")
+    quote_p.add_argument("--store", default=DEFAULT_COOKIE_STORE, help="cookie store file")
+    quote_p.add_argument("--host", default="https://x.com", help="X host (for tests)")
+    quote_p.add_argument("--quote-url", required=True, help="the quoted tweet's status URL (attachment_url)")
+    quote_p.add_argument("text", help="quote text")
+    quote_p.add_argument("--verbose", action="store_true")
+
     return parser.parse_args(argv)
 
 
@@ -294,11 +363,13 @@ def main(argv: list[str] | None = None) -> int:
             config = RelayConfig(poll_interval_s=args.poll_interval)
             try:
                 reader = make_reader(args.store)
+                writer = make_writer(args.store)
             except (cookiestore.CookieStoreError, xclient.XAuthError) as e:
-                log.warning("X read layer unavailable (%s); X commands will fail cleanly", e)
+                log.warning("X layer unavailable (%s); X commands will fail cleanly", e)
                 reader = None
+                writer = None
             log.info("starting, relay_id=%s poll_interval=%ss", state.relay_id, config.poll_interval_s)
-            run_loop(state, config=config, reader=reader)
+            run_loop(state, config=config, reader=reader, writer=writer)
         elif args.command == "cookies" and args.cookies_command == "set":
             auth_token = args.auth_token or os.environ.get("X_AUTH_TOKEN")
             ct0 = args.ct0 or os.environ.get("X_CT0")
@@ -328,6 +399,18 @@ def main(argv: list[str] | None = None) -> int:
             print(f"matches: {len(tweets)}")
             for t in tweets:
                 print(f"- @{t.author}: {t.text[:80]}")
+        elif args.command == "post":
+            tweet_id = make_writer(args.store, host=args.host).post(args.text)
+            log.info("posted tweet_id=%s", tweet_id)
+            print(tweet_id)
+        elif args.command == "reply":
+            tweet_id = make_writer(args.store, host=args.host).reply(args.text, in_reply_to_tweet_id=args.reply_to)
+            log.info("replied tweet_id=%s to %s", tweet_id, args.reply_to)
+            print(tweet_id)
+        elif args.command == "quote":
+            tweet_id = make_writer(args.store, host=args.host).quote(args.text, attachment_url=args.quote_url)
+            log.info("quoted tweet_id=%s attaching %s", tweet_id, args.quote_url)
+            print(tweet_id)
     except (
         RelayError,
         cookiestore.CookieStoreError,
