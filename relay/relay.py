@@ -7,6 +7,8 @@ session authenticates against X.
 
 Ticket 05 scope: cookie store + X transport. Ticket 06: GraphQL reads
 (search/user_posts/profile). Ticket 07: GraphQL writes (post/reply/quote).
+Ticket 08: the funnel profile-driven pass (profile_pass) on top of the read
+layer.
 """
 
 from __future__ import annotations
@@ -140,16 +142,16 @@ def execute_command(command: dict, *, reader=None, writer=None) -> dict:
     """Run a single command locally; returns a result dict for the Worker.
 
     ``reader`` and ``writer`` are the injected X seams (an object with
-    ``search``/``user_posts``/``profile`` read methods, and one with
-    ``post``/``reply``/``quote`` write methods); production passes real ones
-    built from the cookie store. When None and the command needs X, the
-    command fails cleanly.
+    ``search``/``user_posts``/``profile``/``search_profiles`` read methods,
+    and one with ``post``/``reply``/``quote`` write methods); production
+    passes real ones built from the cookie store. When None and the command
+    needs X, the command fails cleanly.
     """
     command_type = command.get("type")
     if command_type == "echo":
         message = command.get("payload", {}).get("message", "")
         return {"ok": True, "output": {"echoed": message}}
-    if command_type in ("search", "user_posts", "profile"):
+    if command_type in ("search", "user_posts", "profile", "profile_pass"):
         if reader is None:
             return {"ok": False, "output": {"error": "X reader not configured"}}
         return _run_x_command(
@@ -182,12 +184,37 @@ def _run_read_command(reader, command_type: str, payload: dict) -> dict:
     if command_type == "search":
         tweets = reader.search(_criteria_from(payload))
         return {"tweets": [t.as_mapping() for t in tweets]}
+    if command_type == "profile_pass":
+        return _run_profile_pass(reader, payload)
     screen_name = payload.get("screen_name")
     if not screen_name:
         raise ValueError("a screen_name is required")
     if command_type == "user_posts":
         return {"tweets": [t.as_mapping() for t in reader.user_posts(screen_name)]}
     return {"profile": reader.profile(screen_name).as_mapping()}
+
+
+def _run_profile_pass(reader, payload: dict) -> dict:
+    """The profile-driven pass: People-search for target profiles, filter them
+    by the targeting profile's credibility criteria, then pull each matched
+    profile's recent tweets into the candidate output. ``max_profiles`` caps
+    how many profiles get their tweets pulled, bounding per-tick request cost."""
+    profile = payload.get("profile") or {}
+    criteria = xreader.ProfileCriteria(
+        keywords=profile.get("keywords") or [],
+        min_followers=profile.get("min_followers"),
+        verified_only=bool(profile.get("verified")),
+        location=profile.get("location"),
+    )
+    profiles = reader.search_profiles(
+        criteria,
+        max_pages=payload.get("max_pages", 3),
+        max_profiles=payload.get("max_profiles", 50),
+    )
+    tweets = []
+    for p in profiles:
+        tweets.extend(reader.user_posts(p.screen_name, max_pages=1))
+    return {"tweets": [t.as_mapping() for t in tweets], "profiles_found": len(profiles)}
 
 
 def _run_write_command(writer, command_type: str, payload: dict) -> dict:

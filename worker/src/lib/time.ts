@@ -2,6 +2,13 @@ const MS_PER_MINUTE = 60_000;
 
 export const DEFAULT_INTERVAL_MINUTES = 1440;
 
+// Normalise a client-supplied interval: floor to whole minutes, default to the
+// daily cadence, and reject anything below one minute.
+export function coerceIntervalMinutes(raw: unknown): { minutes: number; ok: boolean } {
+  const minutes = typeof raw === "number" ? Math.floor(raw) : DEFAULT_INTERVAL_MINUTES;
+  return { minutes, ok: minutes >= 1 };
+}
+
 // Is this a resolvable IANA time zone? The same Intl construction the offset
 // math below relies on, so one options-set lives here.
 export function isValidTimeZone(timeZone: string): boolean {

@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { Env, ScheduleRow } from "../types";
 import { nowSeconds } from "../lib/crypto";
-import { DEFAULT_INTERVAL_MINUTES, addIntervalInZone, isValidTimeZone } from "../lib/time";
+import { addIntervalInZone, coerceIntervalMinutes, isValidTimeZone } from "../lib/time";
 import { safeParse } from "../lib/json";
 import { relayOwnedBy } from "../lib/ownership";
 import { getUser } from "../auth";
@@ -23,14 +23,13 @@ scheduleRoutes.post("/", async (c) => {
   if (!(await relayOwnedBy(c.env.DB, body.relay_id, user.id))) {
     return c.json({ error: "not found" }, 404);
   }
-  const interval =
-    typeof body.interval_minutes === "number" ? Math.floor(body.interval_minutes) : DEFAULT_INTERVAL_MINUTES;
-  if (!(interval >= 1)) return c.json({ error: "interval_minutes must be at least 1" }, 400);
+  const interval = coerceIntervalMinutes(body.interval_minutes);
+  if (!interval.ok) return c.json({ error: "interval_minutes must be at least 1" }, 400);
   const timezone = body.timezone ?? "UTC";
   if (!isValidTimeZone(timezone)) return c.json({ error: "invalid timezone" }, 400);
 
   const nowSec = nowSeconds();
-  const nextRunAt = Math.floor(addIntervalInZone(Date.now(), interval, timezone) / 1000);
+  const nextRunAt = Math.floor(addIntervalInZone(Date.now(), interval.minutes, timezone) / 1000);
   const id = crypto.randomUUID();
   await c.env.DB.prepare(
     `INSERT INTO schedules (id, user_id, relay_id, name, type, payload, status, interval_minutes, timezone, next_run_at, created_at)
@@ -43,7 +42,7 @@ scheduleRoutes.post("/", async (c) => {
       body.name ?? "schedule",
       body.type ?? "echo",
       JSON.stringify(body.payload ?? {}),
-      interval,
+      interval.minutes,
       timezone,
       nextRunAt,
       nowSec,

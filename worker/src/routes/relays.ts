@@ -2,6 +2,7 @@ import { Hono, type Context } from "hono";
 import type { Env, RelayRow } from "../types";
 import { hashToken, nowSeconds, pairingCode } from "../lib/crypto";
 import { commandInsert } from "../lib/command";
+import { resultCandidates } from "../lib/candidates";
 import { safeParse } from "../lib/json";
 import { relayOwnedBy } from "../lib/ownership";
 import { getUser } from "../auth";
@@ -117,17 +118,49 @@ relayRoutes.post("/:id/results", async (c) => {
     results?: Array<{ command_id?: string; ok?: boolean; output?: unknown }>;
   };
   if (!Array.isArray(body.results)) return c.json({ error: "results array required" }, 400);
-  let updated = 0;
+  const now = nowSeconds();
+  const updates: D1PreparedStatement[] = [];
+  const funnel: Array<{ command_id: string; output: unknown }> = [];
   for (const r of body.results) {
     if (!r.command_id) continue;
-    const status = r.ok ? "done" : "failed";
-    const result = await c.env.DB.prepare(
-      "UPDATE commands SET status = ?, result = ?, completed_at = ? WHERE id = ? AND relay_id = ?",
-    )
-      .bind(status, JSON.stringify(r.output ?? {}), nowSeconds(), r.command_id, relay.id)
-      .run();
-    updated += result.meta.changes;
+    updates.push(
+      c.env.DB.prepare(
+        "UPDATE commands SET status = ?, result = ?, completed_at = ? WHERE id = ? AND relay_id = ?",
+      ).bind(r.ok ? "done" : "failed", JSON.stringify(r.output ?? {}), now, r.command_id, relay.id),
+    );
+    if (r.ok) funnel.push({ command_id: r.command_id, output: r.output });
   }
+  const updated =
+    updates.length > 0
+      ? (await c.env.DB.batch(updates)).reduce((n, r) => n + (r.meta?.changes ?? 0), 0)
+      : 0;
+
+  // Funnel commands (Funnel Stage 1) land their reported tweets in the
+  // candidate pool, deduped per user+tweet. Re-select only the successful
+  // funnel commands in one bounded query and derive their inserts from the
+  // shared lib/candidates shapes.
+  const ingest: D1PreparedStatement[] = [];
+  if (funnel.length > 0) {
+    const rows = (await c.env.DB.prepare(
+      `SELECT id, type, payload FROM commands
+       WHERE relay_id = ? AND id IN (${funnel.map(() => "?").join(",")})`,
+    )
+      .bind(relay.id, ...funnel.map((f) => f.command_id))
+      .all()) as unknown as { results: Array<{ id: string; type: string; payload: string }> };
+    const byId = new Map(rows.results.map((row) => [row.id, row]));
+    for (const f of funnel) {
+      const row = byId.get(f.command_id);
+      if (!row) continue;
+      ingest.push(
+        ...resultCandidates(c.env.DB, row, f.output, {
+          userId: relay.user_id,
+          relayId: relay.id,
+          foundAt: now,
+        }),
+      );
+    }
+  }
+  if (ingest.length > 0) await c.env.DB.batch(ingest);
   return c.json({ updated });
 });
 

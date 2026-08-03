@@ -1,9 +1,11 @@
-"""X GraphQL read layer (ticket 06).
+"""X GraphQL read layer (tickets 06 + 08).
 
 The read side of the transport in ``xclient``: resolves GraphQL operations to
 their queryId (three tiers), builds X search queries from structured criteria,
 walks timeline cursors across pages, and maps raw X payloads into the funnel's
-domain types (``Tweet``, ``UserProfile``).
+domain types (``Tweet``, ``UserProfile``). Ticket 08 adds the profile-driven
+pass: People search (``search_profiles``) plus the profile extraction that
+feeds it.
 
 Seam: every read is driven through a ``transport`` callable with the same
 signature as ``XClient.execute`` (``(url, body, session) -> payload``), so the
@@ -15,9 +17,11 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, TypeVar
 
 import xclient
+
+T = TypeVar("T")
 
 # Operation names this read layer needs queryIds for.
 SEARCH_TIMELINE = "SearchTimeline"
@@ -125,6 +129,18 @@ class SearchCriteria:
 
 
 @dataclass(frozen=True)
+class ProfileCriteria:
+    """Structured People-search criteria: keywords matched against names/bios
+    plus the credibility filters a targeting profile's ``profile`` block
+    expresses (follower count, verified flag, location)."""
+
+    keywords: list[str]
+    min_followers: int | None = None
+    verified_only: bool = False
+    location: str | None = None
+
+
+@dataclass(frozen=True)
 class Tweet:
     """A tweet as the funnel reads it."""
 
@@ -205,19 +221,26 @@ def _timeline(payload: dict) -> dict:
     return {}
 
 
-def extract_tweets(payload: dict) -> list[Tweet]:
-    """Read Tweet results out of a search/timeline payload."""
-    tweets: list[Tweet] = []
+def _walk_entries(payload: dict, result_key: str) -> list[dict]:
+    """Walk timeline entries, returning each entry's ``result`` object under
+    the given ``itemContent`` key (``tweet_results`` for tweets, ``user_results``
+    for People-search profiles)."""
+    results: list[dict] = []
     instructions = _timeline(payload).get("instructions", [])
     for instruction in instructions:
         for entry in instruction.get("entries", []):
             content = entry.get("content") or {}
             item = content.get("itemContent") or content.get("entryContent") or {}
-            result = (item.get("tweet_results") or {}).get("result")
+            result = (item.get(result_key) or {}).get("result")
             if not result:
                 continue
-            tweets.append(_tweet_body(result))
-    return tweets
+            results.append(result)
+    return results
+
+
+def extract_tweets(payload: dict) -> list[Tweet]:
+    """Read Tweet results out of a search/timeline payload."""
+    return [_tweet_body(result) for result in _walk_entries(payload, "tweet_results")]
 
 
 def _tweet_body(result: dict) -> Tweet:
@@ -261,9 +284,10 @@ def _walk_pages(
     host: str,
     max_pages: int,
     make_variables: Callable[[str | None], dict],
-) -> list[Tweet]:
-    """Walk a cursor-paginated timeline, collecting tweets across pages."""
-    tweets: list[Tweet] = []
+    extractor: Callable[[dict], list[T]],
+) -> list[T]:
+    """Walk a cursor-paginated timeline, collecting entries across pages."""
+    items: list[T] = []
     cursor: str | None = None
     for _ in range(max_pages):
         url = xclient.graphql_url(host, query_id, operation)
@@ -274,12 +298,12 @@ def _walk_pages(
             "url": url,
         }
         payload = transport(url, body, session)
-        tweets.extend(extract_tweets(payload))
+        items.extend(extractor(payload))
         next_cursor = extract_next_cursor(payload)
         if next_cursor is None:
             break
         cursor = next_cursor
-    return tweets
+    return items
 
 
 def search_tweets(
@@ -300,12 +324,28 @@ def search_tweets(
         operation=SEARCH_TIMELINE,
         host=host,
         max_pages=max_pages,
+        extractor=extract_tweets,
         make_variables=lambda cursor: {
             "rawQuery": criteria.to_x_query(),
             "count": 20,
             "cursor": cursor,
             "product": "Top",
         },
+    )
+
+
+def _user_profile(user: dict) -> UserProfile:
+    """Map the shared account shape (``xclient.user_from_result``) to the
+    funnel's profile domain type."""
+    return UserProfile(
+        rest_id=str(user.get("rest_id") or ""),
+        screen_name=user.get("screen_name") or "",
+        name=user.get("name") or "",
+        bio=user.get("description") or "",
+        followers_count=int(user.get("followers_count") or 0),
+        following_count=int(user.get("following_count") or 0),
+        verified=bool(user.get("verified") or False),
+        location=user.get("location") or None,
     )
 
 
@@ -327,17 +367,57 @@ def profile_lookup(
     }
     payload = transport(url, body, session)
     result = (payload.get("data") or {}).get("result") or {}
-    user = xclient.user_from_result(result)
-    return UserProfile(
-        rest_id=str(user.get("rest_id") or ""),
-        screen_name=user.get("screen_name") or "",
-        name=user.get("name") or "",
-        bio=user.get("description") or "",
-        followers_count=int(user.get("followers_count") or 0),
-        following_count=int(user.get("following_count") or 0),
-        verified=bool(user.get("verified") or False),
-        location=user.get("location") or None,
+    return _user_profile(xclient.user_from_result(result))
+
+
+def extract_profiles(payload: dict) -> list[UserProfile]:
+    """Read user results out of a People-search timeline (SearchTimeline with
+    product=People), where each entry carries ``itemContent.user_results``."""
+    return [
+        _user_profile(xclient.user_from_result(result))
+        for result in _walk_entries(payload, "user_results")
+    ]
+
+
+def _matches_profile_criteria(profile: UserProfile, criteria: ProfileCriteria) -> bool:
+    if criteria.min_followers is not None and profile.followers_count < criteria.min_followers:
+        return False
+    if criteria.verified_only and not profile.verified:
+        return False
+    if criteria.location:
+        if not profile.location or criteria.location.casefold() not in profile.location.casefold():
+            return False
+    return True
+
+
+def search_profiles(
+    transport,
+    session,
+    *,
+    criteria: ProfileCriteria,
+    resolver: QueryIdResolver,
+    host: str = "https://x.com",
+    max_pages: int = 3,
+    max_profiles: int = 50,
+) -> list[UserProfile]:
+    """The profile-driven pass: People search by keyword, filtered to the
+    targeting profile's credibility criteria, capped at ``max_profiles``."""
+    found = _walk_pages(
+        transport,
+        session,
+        query_id=resolver.resolve(SEARCH_TIMELINE),
+        operation=SEARCH_TIMELINE,
+        host=host,
+        max_pages=max_pages,
+        make_variables=lambda cursor: {
+            "rawQuery": " ".join(criteria.keywords),
+            "count": 20,
+            "cursor": cursor,
+            "product": "People",
+        },
+        extractor=extract_profiles,
     )
+    return [p for p in found if _matches_profile_criteria(p, criteria)][:max_profiles]
 
 
 def user_posts(
@@ -360,6 +440,7 @@ def user_posts(
         operation=USER_TWEETS,
         host=host,
         max_pages=max_pages,
+        extractor=extract_tweets,
         make_variables=lambda cursor: {
             "userId": profile.rest_id,
             "count": 20,
@@ -422,4 +503,21 @@ class XReader:
             screen_name,
             resolver=self._resolver,
             host=self.host,
+        )
+
+    def search_profiles(
+        self,
+        criteria: ProfileCriteria,
+        *,
+        max_pages: int = 3,
+        max_profiles: int = 50,
+    ) -> list[UserProfile]:
+        return search_profiles(
+            self._transport,
+            self._session,
+            criteria=criteria,
+            resolver=self._resolver,
+            host=self.host,
+            max_pages=max_pages,
+            max_profiles=max_profiles,
         )

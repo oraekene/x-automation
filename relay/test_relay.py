@@ -115,24 +115,29 @@ def test_execute_echo_command():
 class FakeReader:
     """Fake read seam; returns canned domain values and records calls."""
 
-    def __init__(self, tweets=None, profile=None):
+    def __init__(self, tweets=None, profile=None, profiles=None):
         self.tweets = tweets or []
         self.fake_profile = profile or xreader.UserProfile(
             rest_id="1", screen_name="bob", name="B", bio="", followers_count=0, following_count=0, verified=False, location=None
         )
+        self.profiles = profiles or []
         self.calls = []
 
     def search(self, criteria):
         self.calls.append(("search", criteria))
         return self.tweets
 
-    def user_posts(self, screen_name):
+    def user_posts(self, screen_name, *, max_pages=1):
         self.calls.append(("user_posts", screen_name))
         return self.tweets
 
     def profile(self, screen_name):
         self.calls.append(("profile", screen_name))
         return self.fake_profile
+
+    def search_profiles(self, criteria, *, max_pages=3, max_profiles=50):
+        self.calls.append(("search_profiles", criteria, max_profiles))
+        return self.profiles[:max_profiles]
 
 
 def make_tweet(id="1", author="bob"):
@@ -204,6 +209,75 @@ def test_profile_command_reports_profile():
     profile = result["output"]["profile"]
     assert profile["screen_name"] == "bob"
     assert profile["followers_count"] == 9
+
+
+def make_profile(screen_name, rest_id):
+    return xreader.UserProfile(
+        rest_id=rest_id, screen_name=screen_name, name=screen_name.title(), bio="bio",
+        followers_count=2000, following_count=1, verified=True, location="London",
+    )
+
+
+def test_profile_pass_pulls_recent_tweets_from_matched_profiles():
+    reader = FakeReader(
+        tweets=[make_tweet("a", author="founder1"), make_tweet("b", author="founder1")],
+        profiles=[make_profile("founder1", "11"), make_profile("founder2", "12")],
+    )
+    result = relay_mod.execute_command(
+        {
+            "type": "profile_pass",
+            "payload": {
+                "automation_id": "auto-1",
+                "profile": {"keywords": ["founder"], "min_followers": 1000, "verified": True, "location": "London"},
+                "max_profiles": 2,
+                "max_pages": 1,
+            },
+        },
+        reader=reader,
+    )
+    assert result["ok"] is True
+    assert result["output"]["profiles_found"] == 2
+    assert [t["id"] for t in result["output"]["tweets"]] == ["a", "b", "a", "b"]
+    criteria = reader.calls[0][1]
+    assert isinstance(criteria, xreader.ProfileCriteria)
+    assert criteria.keywords == ["founder"]
+    assert criteria.min_followers == 1000
+    assert criteria.verified_only is True
+    assert criteria.location == "London"
+    assert reader.calls[1] == ("user_posts", "founder1")
+    assert reader.calls[2] == ("user_posts", "founder2")
+
+
+def test_profile_pass_caps_profiles_at_payload_max():
+    reader = FakeReader(
+        tweets=[make_tweet("a", author="founder1")],
+        profiles=[make_profile("founder1", "11"), make_profile("founder2", "12"), make_profile("founder3", "13")],
+    )
+    result = relay_mod.execute_command(
+        {
+            "type": "profile_pass",
+            "payload": {
+                "automation_id": "auto-1",
+                "profile": {"keywords": ["founder"]},
+                "max_profiles": 2,
+                "max_pages": 1,
+            },
+        },
+        reader=reader,
+    )
+    assert result["ok"] is True
+    assert reader.calls[0][2] == 2
+    assert result["output"]["profiles_found"] == 2
+    assert reader.calls[1] == ("user_posts", "founder1")
+    assert reader.calls[2] == ("user_posts", "founder2")
+
+
+def test_profile_pass_without_reader_fails_cleanly():
+    result = relay_mod.execute_command(
+        {"type": "profile_pass", "payload": {"profile": {"keywords": ["x"]}}}
+    )
+    assert result["ok"] is False
+    assert "reader" in result["output"]["error"]
 
 
 def test_read_command_without_reader_fails_cleanly():

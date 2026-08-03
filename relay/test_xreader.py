@@ -318,3 +318,80 @@ def test_user_posts_paginates():
     )
     assert [t.id for t in posts] == ["10", "11"]
     assert transport.calls[2][1]["variables"]["cursor"] == "a"
+
+def user_result(rest_id, screen_name, *, followers=500, verified=False, location="London", bio="founder"):
+    return {
+        "rest_id": rest_id,
+        "legacy": {
+            "screen_name": screen_name,
+            "name": screen_name.title(),
+            "verified": verified,
+            "description": bio,
+            "followers_count": followers,
+            "following_count": 2,
+            "location": location,
+        },
+    }
+
+
+def profile_entry(rest_id, screen_name, **kwargs):
+    return {
+        "entryId": f"user-{rest_id}",
+        "content": {"itemContent": {"user_results": {"result": user_result(rest_id, screen_name, **kwargs)}}},
+    }
+
+
+class TestProfileSearch:
+    def test_extract_profiles_reads_people_results(self):
+        payload = timeline_payload(
+            [profile_entry("1", "founder1", followers=1200), profile_entry("2", "founder2")]
+        )
+        profiles = xreader.extract_profiles(payload)
+        assert [p.screen_name for p in profiles] == ["founder1", "founder2"]
+        assert profiles[0].followers_count == 1200
+        assert profiles[0].location == "London"
+
+    def test_search_profiles_filters_and_sends_people_product(self):
+        transport = FakeTransport(
+            timeline_payload(
+                [
+                    profile_entry("1", "big_founder", followers=5000, verified=True, location="London"),
+                    profile_entry("2", "small_dev", followers=50),
+                    profile_entry("3", "londoner", followers=900),
+                ]
+            )
+        )
+        criteria = xreader.ProfileCriteria(
+            keywords=["founder"], min_followers=1000, verified_only=True, location="london"
+        )
+        profiles = xreader.search_profiles(
+            transport, session_in(), criteria=criteria, resolver=make_resolver()
+        )
+        assert [p.screen_name for p in profiles] == ["big_founder"]
+        url, query = transport.calls[0]
+        assert url == "https://x.com/i/api/graphql/search-tl-current/SearchTimeline"
+        assert query["variables"]["rawQuery"] == "founder"
+        assert query["variables"]["product"] == "People"
+
+    def test_search_profiles_walks_pages_and_caps(self):
+        transport = FakeTransport(
+            timeline_payload([profile_entry("1", "a"), profile_entry("2", "b"), cursor_entry("c1")]),
+            timeline_payload([profile_entry("3", "c"), profile_entry("4", "d")]),
+        )
+        profiles = xreader.search_profiles(
+            transport,
+            session_in(),
+            criteria=xreader.ProfileCriteria(keywords=["x"]),
+            resolver=make_resolver(),
+            max_profiles=3,
+        )
+        assert len(transport.calls) == 2
+        assert [p.screen_name for p in profiles] == ["a", "b", "c"]
+
+    def test_search_profiles_stops_without_next_cursor(self):
+        transport = FakeTransport(timeline_payload([profile_entry("1", "a")]))
+        profiles = xreader.search_profiles(
+            transport, session_in(), criteria=xreader.ProfileCriteria(keywords=["x"]), resolver=make_resolver()
+        )
+        assert len(transport.calls) == 1
+        assert [p.screen_name for p in profiles] == ["a"]

@@ -40,3 +40,70 @@ export type RelayRow = {
   last_seen_at: number | null;
   created_at: number;
 };
+
+export type AutomationRow = {
+  id: string;
+  user_id: string;
+  relay_id: string;
+  name: string;
+  status: string;
+  search_criteria: string;
+  targeting: string;
+  interval_minutes: number;
+  timezone: string;
+  next_run_at: number;
+  last_run_at: number | null;
+  created_at: number;
+};
+
+export type DueAutomationRow = {
+  id: string;
+  relay_id: string;
+  search_criteria: string;
+  targeting: string;
+  interval_minutes: number;
+  timezone: string;
+  next_run_at: number;
+};
+
+export type CandidateRow = {
+  id: string;
+  user_id: string;
+  automation_id: string;
+  relay_id: string;
+  tweet_id: string;
+  author: string;
+  text: string;
+  created_at: string;
+  favorite_count: number;
+  retweet_count: number;
+  reply_count: number;
+  lang: string;
+  source: "search" | "profile";
+  found_at: number;
+};
+
+export type SearchCriteria = {
+  keywords: string[];
+  hashtags?: string[];
+  mentions?: string[];
+  min_faves?: number;
+  min_retweets?: number;
+  min_replies?: number;
+  lang?: string;
+  since?: string;
+  until?: string;
+};
+
+export type TargetingProfile = {
+  profile?: {
+    keywords?: string[];
+    min_followers?: number;
+    verified?: boolean;
+    location?: string;
+  };
+  persona?: string;
+  goals?: string;
+  style?: string;
+  exclusions?: string;
+};
