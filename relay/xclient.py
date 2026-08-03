@@ -275,18 +275,24 @@ def whoami(
     sleep: Callable[[float], None] = time.sleep,
     backoff: Backoff | None = None,
     pacer: Pacer | None = None,
+    query_id: str | None = None,
 ) -> dict:
-    """Verify an authenticated session by reading an account, and return it."""
+    """Verify an authenticated session by reading an account, and return it.
+
+    ``query_id`` lets the caller resolve the real operation id through the
+    three-tier resolver (xreader); when omitted the pinned placeholder is used.
+    """
     screen = screen_name or session.screen_name
     if not screen:
         raise XAuthError("whoami needs a screen_name (pass it or persist it with `relay cookies set`)")
 
     client = XClient(session=http_session, backoff=backoff, sleep=sleep, pacer=pacer)
-    url = graphql_url(host, USER_BY_SCREEN_NAME_QUERY_PLACEHOLDER, "UserByScreenName")
+    qid = query_id or USER_BY_SCREEN_NAME_QUERY_PLACEHOLDER
+    url = graphql_url(host, qid, "UserByScreenName")
     body = {
         "variables": {"screen_name": screen, "withSafetyModeUserFields": False},
         "features": {},
-        "queryId": USER_BY_SCREEN_NAME_QUERY_PLACEHOLDER,
+        "queryId": qid,
     }
     payload = client.execute(url, body, session, max_attempts=max_attempts)
     return _unwrap_user(payload)
@@ -298,10 +304,21 @@ def _unwrap_user(payload: dict) -> dict:
     result = (payload.get("data") or {}).get("result")
     if not isinstance(result, dict):
         raise XNotFoundError("whoami response lacks a user result")
+    user = user_from_result(result)
+    return {key: user.get(key) for key in ("rest_id", "screen_name", "name", "verified")}
+
+
+def user_from_result(result: dict) -> dict:
+    """Map a UserByScreenName ``data.result`` object to the shared account
+    shape both whoami and the GraphQL read layer consume."""
     legacy = result.get("legacy") or {}
     return {
         "rest_id": result.get("rest_id"),
         "screen_name": legacy.get("screen_name"),
         "name": legacy.get("name"),
         "verified": legacy.get("verified"),
+        "description": legacy.get("description"),
+        "followers_count": legacy.get("followers_count"),
+        "following_count": legacy.get("following_count"),
+        "location": legacy.get("location"),
     }

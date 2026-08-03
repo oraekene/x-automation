@@ -24,3 +24,8 @@
   anchor/cron-expression form is a follow-up ticket.
 - Cron slot 3 (daily budget resets) stays reserved in `wrangler.jsonc` comments
   until budgets/daily resets land.
+- Code review (8131c5f) found no spec gaps to fix; findings were consolidation:
+  the command INSERT and `safeParse` were extracted into `lib/command.ts` and
+  `lib/json.ts`, `DueScheduleRow` moved to `types.ts`, and the test `poll()`
+  middle-man was removed. `GET /api/schedules` (list) and the missed-interval
+  fallback are deliberate scope additions kept as-is.

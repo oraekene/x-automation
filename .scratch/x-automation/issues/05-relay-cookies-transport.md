@@ -26,3 +26,9 @@
   for a single-session snapshot.
 - `relay cookies set` prefers `X_AUTH_TOKEN`/`X_CT0` env vars so the session is
   not exposed on the process list; CLI flags still work for throwaway setups.
+- Code review (session commit 8131c5f) fixes: a non-JSON HTTP 200 (X's
+  logged-out-page HTML wall) is now classified as `XAuthError` instead of
+  falling through to "not-found"; key-file 0600 is re-enforced on reload, not
+  just at creation; the redundant `ModuleNotFoundError` clause was dropped;
+  `whoami` CLI output now phrases itself as an authenticated read rather than a
+  screen-name identity claim. Each fix has a regression test.

@@ -25,6 +25,7 @@ from typing import Callable
 
 import cookiestore
 import xclient
+import xreader
 
 log = logging.getLogger("relay")
 
@@ -125,21 +126,73 @@ def report_results(state: RelayState, results: list[dict]) -> dict:
     )
 
 
-def execute_command(command: dict) -> dict:
-    """Run a single command locally; returns a result dict for the Worker."""
+def execute_command(command: dict, *, reader=None) -> dict:
+    """Run a single command locally; returns a result dict for the Worker.
+
+    ``reader`` is the injected read seam (an object with ``search``,
+    ``user_posts`` and ``profile`` methods) that executes X GraphQL reads;
+    production passes a real reader built from the cookie store. When None and
+    the command needs X, the command fails cleanly.
+    """
     command_type = command.get("type")
     if command_type == "echo":
         message = command.get("payload", {}).get("message", "")
         return {"ok": True, "output": {"echoed": message}}
+    if command_type in ("search", "user_posts", "profile"):
+        if reader is None:
+            return {"ok": False, "output": {"error": "X reader not configured"}}
+        try:
+            output = _run_read_command(reader, command_type, command.get("payload", {}))
+            return {"ok": True, "output": output}
+        except (xclient.XError, xreader.QueryIdNotFoundError, ValueError) as e:
+            return {"ok": False, "output": {"error": f"{type(e).__name__}: {e}"}}
     return {"ok": False, "output": {"error": f"unknown command type: {command_type!r}"}}
 
 
-def run_once(state: RelayState) -> list[dict]:
+def _criteria_from(data: dict) -> xreader.SearchCriteria:
+    return xreader.SearchCriteria(
+        keywords=data.get("keywords", []),
+        hashtags=data.get("hashtags"),
+        mentions=data.get("mentions"),
+        lang=data.get("lang"),
+        min_faves=data.get("min_faves"),
+        min_retweets=data.get("min_retweets"),
+        min_replies=data.get("min_replies"),
+        since=data.get("since"),
+        until=data.get("until"),
+    )
+
+
+def _run_read_command(reader, command_type: str, payload: dict) -> dict:
+    if command_type == "search":
+        tweets = reader.search(_criteria_from(payload))
+        return {"tweets": [t.as_mapping() for t in tweets]}
+    screen_name = payload.get("screen_name")
+    if not screen_name:
+        raise ValueError("a screen_name is required")
+    if command_type == "user_posts":
+        return {"tweets": [t.as_mapping() for t in reader.user_posts(screen_name)]}
+    return {"profile": reader.profile(screen_name).as_mapping()}
+
+
+def make_reader(
+    store: str | Path = DEFAULT_COOKIE_STORE,
+    *,
+    session: xclient.XSession | None = None,
+    host: str = "https://x.com",
+) -> xreader.XReader:
+    """Build the production read seam from the encrypted cookie store."""
+    if session is None:
+        session = xclient.XSession.from_mapping(cookiestore.CookieStore(store).load())
+    return xreader.XReader.from_client(session, host=host)
+
+
+def run_once(state: RelayState, *, reader=None) -> list[dict]:
     """Poll, execute, and report one round. Returns per-command results."""
     commands = poll_commands(state)
     results = []
     for command in commands:
-        outcome = execute_command(command)
+        outcome = execute_command(command, reader=reader)
         results.append({"command_id": command.get("id"), **outcome})
     if results:
         report_results(state, results)
@@ -153,12 +206,13 @@ def run_loop(
     should_stop: Callable[[], bool] = lambda: False,
     on_status: Callable[[str], None] = lambda msg: log.info(msg),
     sleep: Callable[[float], None] = time.sleep,
+    reader=None,
 ) -> None:
     """Poll the command channel until should_stop() is True."""
     interval = (config or RelayConfig()).poll_interval_s
     while not should_stop():
         try:
-            run_once(state)
+            run_once(state, reader=reader)
             on_status("connected")
         except RelayError:
             on_status("unreachable")
@@ -183,6 +237,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
     run_p = subparsers.add_parser("run", help="poll and execute commands in a loop")
     run_p.add_argument("--state", default=DEFAULT_STATE_FILE, help="state file from pair")
+    run_p.add_argument("--store", default=DEFAULT_COOKIE_STORE, help="cookie store file for X reads")
     run_p.add_argument("--poll-interval", type=float, default=DEFAULT_POLL_INTERVAL_S, help="seconds between polls")
     run_p.add_argument("--verbose", action="store_true")
 
@@ -201,6 +256,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     whoami_p.add_argument("--host", default="https://x.com", help="X host (for tests)")
     whoami_p.add_argument("--max-attempts", type=int, default=3, help="transient retries before giving up")
     whoami_p.add_argument("--verbose", action="store_true")
+
+    search_p = subparsers.add_parser("search", help="search X with keyword criteria (demo of the GraphQL read layer)")
+    search_p.add_argument("--store", default=DEFAULT_COOKIE_STORE, help="cookie store file")
+    search_p.add_argument("--host", default="https://x.com", help="X host (for tests)")
+    search_p.add_argument("keywords", nargs="+", help="search keywords")
+    search_p.add_argument("--min-faves", type=int, default=None, help="min_faves: engagement threshold")
+    search_p.add_argument("--min-retweets", type=int, default=None, help="min_retweets: engagement threshold")
+    search_p.add_argument("--min-replies", type=int, default=None, help="min_replies: engagement threshold")
+    search_p.add_argument("--lang", default=None, help="lang: language filter")
+    search_p.add_argument("--since", default=None, help="since:YYYY-MM-DD time window start")
+    search_p.add_argument("--until", default=None, help="until:YYYY-MM-DD time window end")
+    search_p.add_argument("--max-pages", type=int, default=3, help="search pagination cap")
+    search_p.add_argument("--verbose", action="store_true")
 
     return parser.parse_args(argv)
 
@@ -224,8 +292,13 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "run":
             state = RelayState.load(args.state)
             config = RelayConfig(poll_interval_s=args.poll_interval)
+            try:
+                reader = make_reader(args.store)
+            except (cookiestore.CookieStoreError, xclient.XAuthError) as e:
+                log.warning("X read layer unavailable (%s); X commands will fail cleanly", e)
+                reader = None
             log.info("starting, relay_id=%s poll_interval=%ss", state.relay_id, config.poll_interval_s)
-            run_loop(state, config=config)
+            run_loop(state, config=config, reader=reader)
         elif args.command == "cookies" and args.cookies_command == "set":
             auth_token = args.auth_token or os.environ.get("X_AUTH_TOKEN")
             ct0 = args.ct0 or os.environ.get("X_CT0")
@@ -237,15 +310,30 @@ def main(argv: list[str] | None = None) -> int:
             log.info("saved X session encrypted at rest to %s", args.store)
         elif args.command == "whoami":
             session = xclient.XSession.from_mapping(cookiestore.CookieStore(args.store).load())
+            query_id = xreader.QueryIdResolver().resolve(xreader.USER_BY_SCREEN_NAME)
             viewer = xclient.whoami(
                 session,
                 host=args.host,
                 screen_name=args.screen_name,
                 max_attempts=args.max_attempts,
                 pacer=xclient.Pacer(),
+                query_id=query_id,
             )
             print(f"authenticated: rest_id={viewer['rest_id']} name={viewer['name']} (@{viewer['screen_name']})")
-    except (RelayError, cookiestore.CookieStoreError, xclient.XError) as e:
+        elif args.command == "search":
+            reader = make_reader(args.store, host=args.host)
+            criteria = _criteria_from(vars(args))
+            tweets = reader.search(criteria, max_pages=args.max_pages)
+            print(f"query: {criteria.to_x_query()}")
+            print(f"matches: {len(tweets)}")
+            for t in tweets:
+                print(f"- @{t.author}: {t.text[:80]}")
+    except (
+        RelayError,
+        cookiestore.CookieStoreError,
+        xclient.XError,
+        xreader.QueryIdNotFoundError,
+    ) as e:
         log.error("%s", e)
         return 1
     except KeyboardInterrupt:

@@ -5,6 +5,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import relay as relay_mod
+import xreader
 
 
 class FakeWorker(BaseHTTPRequestHandler):
@@ -108,6 +109,96 @@ def test_state_save_and_load_roundtrip(tmp_path: Path):
 def test_execute_echo_command():
     result = relay_mod.execute_command({"type": "echo", "payload": {"message": "hi"}})
     assert result == {"ok": True, "output": {"echoed": "hi"}}
+
+
+class FakeReader:
+    """Fake read seam; returns canned domain values and records calls."""
+
+    def __init__(self, tweets=None, profile=None):
+        self.tweets = tweets or []
+        self.fake_profile = profile or xreader.UserProfile(
+            rest_id="1", screen_name="bob", name="B", bio="", followers_count=0, following_count=0, verified=False, location=None
+        )
+        self.calls = []
+
+    def search(self, criteria):
+        self.calls.append(("search", criteria))
+        return self.tweets
+
+    def user_posts(self, screen_name):
+        self.calls.append(("user_posts", screen_name))
+        return self.tweets
+
+    def profile(self, screen_name):
+        self.calls.append(("profile", screen_name))
+        return self.fake_profile
+
+
+def make_tweet(id="1", author="bob"):
+    return xreader.Tweet(id=id, author=author, text="hello", created_at="", favorite_count=1, retweet_count=0, reply_count=0, lang="en")
+
+
+def test_search_command_reports_tweets():
+    reader = FakeReader(tweets=[make_tweet("1"), make_tweet("2")])
+    result = relay_mod.execute_command(
+        {
+            "type": "search",
+            "payload": {"keywords": ["openai"], "lang": "en", "min_faves": 5},
+        },
+        reader=reader,
+    )
+    assert result["ok"] is True
+    assert [t["id"] for t in result["output"]["tweets"]] == ["1", "2"]
+    called, criteria = reader.calls[0]
+    assert called == "search"
+    assert criteria.lang == "en"
+    assert criteria.min_faves == 5
+    assert criteria.keywords == ["openai"]
+
+
+def test_user_posts_command_reports_tweets():
+    reader = FakeReader(tweets=[make_tweet("7")])
+    result = relay_mod.execute_command(
+        {"type": "user_posts", "payload": {"screen_name": "bob"}},
+        reader=reader,
+    )
+    assert result["ok"] is True
+    assert reader.calls == [("user_posts", "bob")]
+    assert result["output"]["tweets"][0]["id"] == "7"
+
+
+def test_profile_command_reports_profile():
+    reader = FakeReader(profile=xreader.UserProfile(
+        rest_id="1", screen_name="bob", name="Bob", bio="bio", followers_count=9, following_count=1, verified=True, location="LA"
+    ))
+    result = relay_mod.execute_command(
+        {"type": "profile", "payload": {"screen_name": "bob"}},
+        reader=reader,
+    )
+    assert result["ok"] is True
+    profile = result["output"]["profile"]
+    assert profile["screen_name"] == "bob"
+    assert profile["followers_count"] == 9
+
+
+def test_read_command_without_reader_fails_cleanly():
+    result = relay_mod.execute_command({"type": "search", "payload": {"keywords": ["x"]}})
+    assert result["ok"] is False
+    assert "reader" in result["output"]["error"]
+
+
+def test_run_once_routes_read_commands_through_reader():
+    with serving(FakeWorker) as base:
+        FakeWorker.commands = [
+            {"id": "c10", "type": "search", "payload": {"keywords": ["x"]}},
+            {"id": "c11", "type": "echo", "payload": {"message": "hi"}},
+        ]
+        results = relay_mod.run_once(state_for(base), reader=FakeReader(tweets=[make_tweet("3")]))
+        assert results == [
+            {"command_id": "c10", "ok": True, "output": {"tweets": [make_tweet("3").as_mapping()]}},
+            {"command_id": "c11", "ok": True, "output": {"echoed": "hi"}},
+        ]
+        assert FakeWorker.results == results
 
 
 def test_execute_unknown_command_fails():
