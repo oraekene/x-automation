@@ -100,6 +100,18 @@ function validBudgets(raw: unknown): boolean {
   return true;
 }
 
+// Validate the execution mode (ticket 11): manual | auto | hybrid, with the
+// hybrid threshold an integer 1-5 (priority >= threshold needs inbox review).
+function validMode(raw: unknown): raw is { mode: "manual" | "auto" | "hybrid"; auto_threshold: number } {
+  if (typeof raw !== "object" || raw === null) return false;
+  const m = raw as Record<string, unknown>;
+  const mode = m.mode ?? "manual";
+  if (mode !== "manual" && mode !== "auto" && mode !== "hybrid") return false;
+  const threshold = m.auto_threshold ?? 4;
+  if (typeof threshold !== "number" || !Number.isInteger(threshold) || threshold < 1 || threshold > 5) return false;
+  return true;
+}
+
 automationRoutes.post("/", async (c) => {
   const user = await getUser(c);
   if (!user) return c.json({ error: "unauthorized" }, 401);
@@ -110,6 +122,7 @@ automationRoutes.post("/", async (c) => {
     targeting?: unknown;
     rules?: unknown;
     budgets?: unknown;
+    mode?: unknown;
     interval_minutes?: number;
     timezone?: string;
   };
@@ -129,6 +142,10 @@ automationRoutes.post("/", async (c) => {
   if (!validBudgets(body.budgets)) {
     return c.json({ error: "budgets needs non-negative daily caps and HH:MM quiet hours" }, 400);
   }
+  const mode = body.mode === undefined ? undefined : (body.mode as { mode: string; auto_threshold?: number });
+  if (mode !== undefined && !validMode(mode)) {
+    return c.json({ error: "mode must be manual | auto | hybrid with an integer auto_threshold 1-5" }, 400);
+  }
   const interval = coerceIntervalMinutes(body.interval_minutes);
   if (!interval.ok) return c.json({ error: "interval_minutes must be at least 1" }, 400);
   const timezone = body.timezone ?? "UTC";
@@ -137,9 +154,11 @@ automationRoutes.post("/", async (c) => {
   const nowSec = nowSeconds();
   const nextRunAt = Math.floor(addIntervalInZone(Date.now(), interval.minutes, timezone) / 1000);
   const id = crypto.randomUUID();
+  const modeValue = mode?.mode ?? "manual";
+  const thresholdValue = mode?.auto_threshold ?? 4;
   await c.env.DB.prepare(
-    `INSERT INTO automations (id, user_id, relay_id, name, status, search_criteria, targeting, rules, budgets, interval_minutes, timezone, next_run_at, created_at)
-     VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO automations (id, user_id, relay_id, name, status, search_criteria, targeting, rules, budgets, mode, auto_threshold, interval_minutes, timezone, next_run_at, created_at)
+     VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       id,
@@ -150,6 +169,8 @@ automationRoutes.post("/", async (c) => {
       JSON.stringify(body.targeting ?? {}),
       JSON.stringify(body.rules ?? {}),
       JSON.stringify(body.budgets ?? {}),
+      modeValue,
+      thresholdValue,
       interval.minutes,
       timezone,
       nextRunAt,
@@ -177,6 +198,8 @@ automationRoutes.get("/", async (c) => {
       targeting: safeParse(r.targeting) as TargetingProfile,
       rules: safeParse(r.rules),
       budgets: safeParse(r.budgets),
+      mode: r.mode,
+      auto_threshold: r.auto_threshold,
       interval_minutes: r.interval_minutes,
       timezone: r.timezone,
       next_run_at: r.next_run_at,

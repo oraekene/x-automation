@@ -8,6 +8,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import {
   aiTargetingVerdict,
+  draftContent,
   maskApiKey,
   PROVIDER_PRESETS,
   type TargetingVerdict,
@@ -28,7 +29,7 @@ const candidate = {
   profile: '{"persona":"senior TS dev","exclusions":"recruiters"}',
 };
 
-function stubResponse(verdict: TargetingVerdict): { status: number; body: unknown } {
+function stubResponse(verdict: Record<string, unknown>): { status: number; body: unknown } {
   return {
     status: 200,
     body: { choices: [{ message: { content: JSON.stringify(verdict) } }] },
@@ -188,6 +189,75 @@ describe("aiTargetingVerdict", () => {
 
     expect(out.ok).toBe(false);
     expect(out.ok || out.error).toBe("parse");
+  });
+});
+
+describe("draftContent", () => {
+  const contentCtx = () => ({
+    baseUrl,
+    apiKey: "sk-test",
+    model: "m1",
+    candidate: { ...candidate, profile: '{"persona":"senior TS dev"}' },
+    action: "reply" as const,
+    reason: "on-topic",
+  });
+
+  it("returns the text from a JSON response", async () => {
+    response = stubResponse({ text: "Great point — we moved off enums and never looked back." });
+
+    const out = await draftContent(contentCtx());
+
+    expect(out).toEqual({ ok: true, text: "Great point — we moved off enums and never looked back." });
+    const messages = lastRequest.body.messages as Array<{ role: string; content: string }>;
+    expect(messages[1]?.content).toContain("@alice");
+    expect(messages[1]?.content).toContain("reply");
+  });
+
+  it("parses a fenced JSON response", async () => {
+    response = {
+      status: 200,
+      body: {
+        choices: [{ message: { content: '```json\n{"text":"Agreed."}\n```' } }],
+      },
+    };
+
+    const out = await draftContent(contentCtx());
+
+    expect(out).toEqual({ ok: true, text: "Agreed." });
+  });
+
+  it("treats plain prose content as the draft text", async () => {
+    response = { status: 200, body: { choices: [{ message: { content: "Just a plain reply text." } }] } };
+
+    const out = await draftContent(contentCtx());
+
+    expect(out).toEqual({ ok: true, text: "Just a plain reply text." });
+  });
+
+  it("maps a 429 to http_429", async () => {
+    response = { status: 429, body: { error: {} } };
+
+    const out = await draftContent(contentCtx());
+
+    expect(out).toEqual({ ok: false, error: "http_429" });
+  });
+
+  it("rejects empty content as invalid", async () => {
+    response = { status: 200, body: { choices: [{ message: { content: "   " } }] } };
+
+    const out = await draftContent(contentCtx());
+
+    expect(out.ok).toBe(false);
+    expect(out.ok || out.error).toBe("invalid");
+  });
+
+  it("rejects content over 280 characters", async () => {
+    response = stubResponse({ text: "x".repeat(281) });
+
+    const out = await draftContent(contentCtx());
+
+    expect(out.ok).toBe(false);
+    expect(out.ok || out.error).toBe("too_long");
   });
 });
 

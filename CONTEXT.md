@@ -77,5 +77,5 @@ A multi-turn exchange started by inbound replies to the user's own tweets. Termi
 _Avoid_: thread, chat
 
 **Inbox**:
-The review surface for Drafts and AI decisions; one of three execution modes (manual, automatic, hybrid).
+The review surface for Drafts and AI decisions; one of three execution modes (manual, auto, hybrid).
 _Avoid_: queue, feed

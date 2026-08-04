@@ -9,9 +9,9 @@
 // retried — so repeated runs are idempotent and never spend a user's AI quota
 // twice.
 
-import type { AutomationRow, Env, ProviderRow } from "../types";
+import type { AutomationRow, CandidateRow, Env, ProviderRow } from "../types";
 import { nowSeconds } from "./crypto";
-import { aiTargetingVerdict } from "./ai";
+import { aiTargetingVerdict, draftContent } from "./ai";
 import { decisionInsert } from "./decisions";
 import { draftInsert } from "./drafts";
 import { deriveActionable } from "./funnel-run";
@@ -86,12 +86,23 @@ export async function runTargeting(
       .all()) as unknown as { results: AiVerdictRow[] };
     const latestVerdict = latestAiDecisions(aiRows.results);
 
+    // Terminal inbox decisions (rejected here, failed in the relay) must never
+    // be re-judged: exclude those candidates from the pass so no AI quota is
+    // spent on them again.
+    const terminal = (await env.DB.prepare(
+      "SELECT candidate_id FROM drafts WHERE user_id = ? AND automation_id = ? AND status IN ('rejected', 'failed')",
+    )
+      .bind(userId, a.id)
+      .all()) as unknown as { results: Array<{ candidate_id: string }> };
+    const terminalIds = new Set(terminal.results.map((r) => r.candidate_id));
+
     let drafts = 0;
     let skips = 0;
     let failures = 0;
     let judgedHere = 0;
 
     for (const k of survivors) {
+      if (terminalIds.has(k.candidateId)) continue;
       const verdict = latestVerdict.get(k.candidateId);
       if (verdict && verdict !== "fail") continue; // already judged: draft or skip
       if (judgedCap !== undefined && judged >= judgedCap) break;
@@ -149,6 +160,23 @@ export async function runTargeting(
           }),
         );
       } else {
+        // Draft the reply/quote text in the user's style; a failed content
+        // call still records the draft so the inbox can review it and the
+        // hourly content retry can fill the text in later.
+        const content = await draftContent({
+          baseUrl: provider.base_url,
+          apiKey: provider.api_key,
+          model: provider.model,
+          candidate: {
+            author: cand?.author ?? "",
+            text: cand?.text ?? "",
+            score: k.score,
+            automationName: a.name,
+            profile,
+          },
+          action: v.action,
+          reason: v.reason,
+        });
         drafts += 1;
         statements.push(
           draftInsert(env.DB, {
@@ -161,6 +189,8 @@ export async function runTargeting(
             priority: v.priority,
             provider: provider.base_url,
             model: provider.model,
+            status: content.ok ? "ready" : "content_failed",
+            text: content.ok ? content.text : "",
             createdAt: nowSec,
           }),
           decisionInsert(env.DB, {
@@ -191,4 +221,68 @@ export async function runTargeting(
 
   if (statements.length > 0) await env.DB.batch(statements);
   return { summaries };
+}
+
+type ContentRetryDraft = {
+  id: number;
+  user_id: string;
+  automation_id: string;
+  candidate_id: string;
+  action: "reply" | "quote";
+  reason: string;
+  priority: number;
+  provider: string;
+  model: string;
+  author: string;
+  candidate_text: string;
+  automation_name: string;
+  targeting: string;
+};
+
+// Hourly content retry: drafts whose content call failed stay visible in the
+// inbox (status content_failed) and get another shot at filling their text in.
+// The current provider config is used, so a switch of provider heals stuck
+// drafts. Bounded per user, and only ever touches content_failed rows.
+export async function retryDraftContent(env: Env, userId: string, cap: number): Promise<number> {
+  const provider = (await env.DB.prepare("SELECT * FROM provider_configs WHERE user_id = ?")
+    .bind(userId)
+    .first()) as ProviderRow | undefined;
+  if (!provider) return 0;
+
+  const rows = (await env.DB.prepare(
+    `SELECT d.id, d.user_id, d.automation_id, d.candidate_id, d.action, d.reason, d.priority, d.provider, d.model,
+            c.author, c.text AS candidate_text, a.name AS automation_name, a.targeting
+     FROM drafts d
+     JOIN candidates c ON c.id = d.candidate_id
+     JOIN automations a ON a.id = d.automation_id
+     WHERE d.user_id = ? AND d.status = 'content_failed'
+     ORDER BY d.created_at ASC
+     LIMIT ?`,
+  )
+    .bind(userId, cap)
+    .all()) as unknown as { results: ContentRetryDraft[] };
+
+  let done = 0;
+  for (const d of rows.results) {
+    const out = await draftContent({
+      baseUrl: provider.base_url,
+      apiKey: provider.api_key,
+      model: provider.model,
+      candidate: {
+        author: d.author,
+        text: d.candidate_text,
+        score: d.priority,
+        automationName: d.automation_name,
+        profile: JSON.stringify(safeParse(d.targeting)),
+      },
+      action: d.action,
+      reason: d.reason,
+    });
+    if (!out.ok) continue;
+    await env.DB.prepare("UPDATE drafts SET status = 'ready', text = ? WHERE id = ? AND user_id = ? AND status = 'content_failed'")
+      .bind(out.text, d.id, userId)
+      .run();
+    done += 1;
+  }
+  return done;
 }

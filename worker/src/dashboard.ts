@@ -55,6 +55,12 @@ const PAGE = `<!doctype html>
   <label>Allowlist <input id="aAllowlist" placeholder="alice, bob"></label>
   <label>Blocklist <input id="aBlocklist" placeholder="spammy"></label>
   <label>Timezone <input id="aTz" placeholder="UTC" value="UTC"></label>
+  <label>Mode <select id="aMode">
+    <option value="manual" selected>Manual (inbox only)</option>
+    <option value="auto">Automatic</option>
+    <option value="hybrid">Hybrid</option>
+  </select></label>
+  <label>Auto threshold <input id="aThreshold" type="number" min="1" max="5" value="4"></label>
   <button type="submit">Create automation</button>
 </form>
 <table>
@@ -89,8 +95,9 @@ const PAGE = `<!doctype html>
 </form>
 <p class="muted">Run targeting on the actionable survivors (POST /api/funnel/target); failed verdicts are retried on the next run and hourly.</p>
 <button id="runTarget">Run targeting</button>
+<p class="muted">Inbox: approve executes the draft through the relay; reject marks it and nothing posts. Automatic/hybrid modes execute on the tick.</p>
 <table>
-  <thead><tr><th>When</th><th>Action</th><th>Priority</th><th>Reason</th><th>Automation</th><th>Author</th><th>Text</th></tr></thead>
+  <thead><tr><th>When</th><th>Action</th><th>Priority</th><th>Status</th><th>Text</th><th>Automation</th><th>Author</th><th>Reason</th><th></th></tr></thead>
   <tbody id="draftRows"></tbody>
 </table>
 
@@ -208,9 +215,27 @@ const PAGE = `<!doctype html>
     draftRows.innerHTML = "";
     for (const d of data.drafts) {
       const tr = document.createElement("tr");
+      const decidable = d.status === "ready" || d.status === "content_failed";
       tr.innerHTML = \`<td>\${new Date(d.created_at * 1000).toISOString()}</td><td>\${esc(d.action)}</td>
-        <td>\${d.priority}</td><td>\${esc(d.reason)}</td><td>\${esc(d.automation_name)}</td>
-        <td>@\${esc(d.author)}</td><td>\${esc(d.text.slice(0, 80))}</td>\`;
+        <td>\${d.priority}</td><td>\${esc(d.status)}</td><td>\${esc((d.text || "(no text)").slice(0, 60))}</td>
+        <td>\${esc(d.automation_name)}</td><td>@\${esc(d.author)}</td><td>\${esc(d.reason)}</td>
+        <td>\${decidable ? \`<button class="approve" data-id="\${d.id}">Approve</button>
+        <button class="reject" data-id="\${d.id}">Reject</button>\` : ""}</td>\`;
+      if (decidable) {
+        tr.querySelector("button.approve").addEventListener("click", async () => {
+          const text = prompt("Approve — edit text (blank keeps draft text)", d.text || "");
+          const body = text === null ? null : JSON.stringify(text.trim() ? { text: text.trim() } : {});
+          if (body === null) return;
+          const r = await fetch("/api/drafts/" + d.id + "/approve", { method: "POST", headers: { "content-type": "application/json" }, body });
+          if (!r.ok) { alert("approve failed: " + (await r.text())); return; }
+          refreshDrafts();
+          refresh();
+        });
+        tr.querySelector("button.reject").addEventListener("click", async () => {
+          await fetch("/api/drafts/" + d.id + "/reject", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+          refreshDrafts();
+        });
+      }
       draftRows.appendChild(tr);
     }
   }
@@ -272,6 +297,10 @@ const PAGE = `<!doctype html>
         quiet_hours: (document.getElementById("aQuietStart").value && document.getElementById("aQuietEnd").value)
           ? { start: document.getElementById("aQuietStart").value, end: document.getElementById("aQuietEnd").value }
           : undefined,
+      },
+      mode: {
+        mode: document.getElementById("aMode").value,
+        auto_threshold: parseInt(document.getElementById("aThreshold").value, 10) || 4,
       },
       interval_minutes: parseInt(document.getElementById("aInterval").value, 10) * 60,
       timezone: document.getElementById("aTz").value || "UTC",

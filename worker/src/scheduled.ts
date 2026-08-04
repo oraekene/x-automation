@@ -3,7 +3,8 @@ import { nowSeconds } from "./lib/crypto";
 import { commandInsert } from "./lib/command";
 import { safeParse } from "./lib/json";
 import { addIntervalInZone } from "./lib/time";
-import { runTargeting } from "./lib/target";
+import { executeReadyDrafts } from "./lib/execution";
+import { runTargeting, retryDraftContent } from "./lib/target";
 
 export const TICK_CRON = "* * * * *";
 export const MAINT_CRON = "0 * * * *";
@@ -148,16 +149,32 @@ export async function retryAiTargeting(env: Env): Promise<number> {
   return judged;
 }
 
+// Hourly content retry: fill in the text of drafts whose content generation
+// failed. Capped per user; a user's broken provider only costs their own drafts.
+export async function retryContent(env: Env): Promise<number> {
+  const users = (await env.DB.prepare(
+    "SELECT DISTINCT user_id FROM drafts WHERE status = 'content_failed' ORDER BY user_id",
+  ).all()) as unknown as { results: Array<{ user_id: string }> };
+
+  let fixed = 0;
+  for (const u of users.results) {
+    fixed += await retryDraftContent(env, u.user_id, MAX_AI_RETRY);
+  }
+  return fixed;
+}
+
 // Entry point for the Worker's scheduled handler; routes each cron slot.
 export async function runScheduled(controller: { cron: string | null }, env: Env): Promise<void> {
   switch (controller.cron) {
     case TICK_CRON:
       await tick(env);
       await tickAutomations(env);
+      await executeReadyDrafts(env);
       break;
     case MAINT_CRON:
       await maintenance(env);
       await retryAiTargeting(env);
+      await retryContent(env);
       break;
   }
 }

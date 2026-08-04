@@ -22,6 +22,10 @@ export type AiCandidateContext = {
   profile: string; // the automation's targeting profile (JSON), the LLM's fixed reference
 };
 
+export type DraftContentOutcome = { ok: true; text: string } | { ok: false; error: string };
+
+export const MAX_DRAFT_LENGTH = 280;
+
 export type ProviderPreset = { name: string; base_url: string };
 
 // The free-endpoint menu offered in the dashboard provider form (spec:
@@ -137,4 +141,96 @@ export async function aiTargetingVerdict(opts: {
 export function maskApiKey(key: string): string {
   if (key.length <= 4) return "••••••••";
   return "••••••••" + key.slice(-4);
+}
+
+const CONTENT_SYSTEM_PROMPT = [
+  "You draft X (Twitter) posts in the user's style and voice.",
+  "A user message gives you the targeting profile, the candidate post, and the action decided by the targeting stage (reply or quote).",
+  "Draft the post text. Reply = directly engage the author conversationally; quote = add your own commentary on top.",
+  "Write naturally, no hashtag-stuffing, no emoji excess, under 280 characters.",
+  "Respond with ONLY a JSON object: {\"text\": \"<the draft>\"}",
+].join("\n");
+
+function parseContent(content: string): DraftContentOutcome {
+  const raw = extractJsonObject(content);
+  if (raw !== undefined) {
+    const t = (raw as { text?: unknown }).text;
+    if (typeof t === "string" && t.trim().length > 0) {
+      if (t.length > MAX_DRAFT_LENGTH) return { ok: false, error: "too_long" };
+      return { ok: true, text: t.trim() };
+    }
+  }
+  let text = content.trim();
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+  if (fence) text = fence[1]!.trim();
+  if (text.startsWith('"') && text.endsWith('"')) {
+    try {
+      const unquoted = JSON.parse(text) as unknown;
+      if (typeof unquoted === "string" && unquoted.trim().length > 0) text = unquoted.trim();
+    } catch {
+      // fall through to raw text
+    }
+  }
+  if (text.length === 0) return { ok: false, error: "invalid" };
+  if (text.length > MAX_DRAFT_LENGTH) return { ok: false, error: "too_long" };
+  return { ok: true, text };
+}
+
+// Draft the reply/quote text for an already-judged candidate, in the user's
+// style (the targeting profile is the voice reference). Same wire contract as
+// aiTargetingVerdict — one OpenAI-compatible call, tolerant parsing, explicit
+// failure so the caller can mark the draft content_failed and retry later.
+export async function draftContent(opts: {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  candidate: AiCandidateContext;
+  action: "reply" | "quote";
+  reason: string;
+}): Promise<DraftContentOutcome> {
+  const { baseUrl, apiKey, model, candidate, action, reason } = opts;
+  const userPrompt = [
+    "Targeting profile:",
+    candidate.profile || "{}",
+    "Candidate post:",
+    `author: ${candidate.author}`,
+    `text: ${candidate.text}`,
+    `score: ${candidate.score}`,
+    `automation: ${candidate.automationName}`,
+    "Decided action:",
+    `${action} — reason: ${reason}`,
+  ].join("\n");
+
+  let res: Response;
+  try {
+    res = await fetch(`${baseUrl.replace(/\/+$/, "")}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: "system", content: CONTENT_SYSTEM_PROMPT },
+          { role: "user", content: userPrompt },
+        ],
+      }),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+  } catch {
+    return { ok: false, error: "network" };
+  }
+
+  if (!res.ok) return { ok: false, error: `http_${res.status}` };
+
+  let data: unknown;
+  try {
+    data = await res.json();
+  } catch {
+    return { ok: false, error: "parse" };
+  }
+  const content = (data as { choices?: Array<{ message?: { content?: string } }> })?.choices?.[0]?.message?.content;
+  if (typeof content !== "string" || content.trim() === "") return { ok: false, error: "invalid" };
+  return parseContent(content);
 }

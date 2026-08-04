@@ -52,6 +52,8 @@ export type AutomationRow = {
   targeting: string;
   rules: string;
   budgets: string;
+  mode: "manual" | "auto" | "hybrid";
+  auto_threshold: number;
   interval_minutes: number;
   timezone: string;
   next_run_at: number;
@@ -106,6 +108,28 @@ export type ProviderRow = {
   api_key: string;
   model: string;
   updated_at: number;
+};
+
+export type DraftStatus = "ready" | "content_failed" | "executing" | "done" | "rejected" | "failed";
+
+export type DraftRow = {
+  id: number;
+  user_id: string;
+  relay_id: string;
+  automation_id: string;
+  candidate_id: string;
+  action: "reply" | "quote";
+  reason: string;
+  priority: number;
+  provider: string;
+  model: string;
+  status: DraftStatus;
+  text: string;
+  command_id: string | null;
+  result_tweet_id: string | null;
+  executed_at: number | null;
+  decided_at: number | null;
+  created_at: number;
 };
 
 export type SearchCriteria = {

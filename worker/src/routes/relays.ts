@@ -121,6 +121,7 @@ relayRoutes.post("/:id/results", async (c) => {
   const now = nowSeconds();
   const updates: D1PreparedStatement[] = [];
   const funnel: Array<{ command_id: string; output: unknown }> = [];
+  const writes: Array<{ command_id: string; ok: boolean }> = [];
   for (const r of body.results) {
     if (!r.command_id) continue;
     updates.push(
@@ -129,6 +130,7 @@ relayRoutes.post("/:id/results", async (c) => {
       ).bind(r.ok ? "done" : "failed", JSON.stringify(r.output ?? {}), now, r.command_id, relay.id),
     );
     if (r.ok) funnel.push({ command_id: r.command_id, output: r.output });
+    else writes.push({ command_id: r.command_id, ok: false });
   }
   const updated =
     updates.length > 0
@@ -136,10 +138,13 @@ relayRoutes.post("/:id/results", async (c) => {
       : 0;
 
   // Funnel commands (Funnel Stage 1) land their reported tweets in the
-  // candidate pool, deduped per user+tweet. Re-select only the successful
-  // funnel commands in one bounded query and derive their inserts from the
-  // shared lib/candidates shapes.
+  // candidate pool, deduped per user+tweet. Write commands (draft execution,
+  // ticket 11) land their outcome back on the draft: done with the created
+  // tweet id, or failed. Re-select only the successful commands in one bounded
+  // query and derive their inserts from the shared lib/candidates shapes.
   const ingest: D1PreparedStatement[] = [];
+  const draftUpdates: D1PreparedStatement[] = [];
+  const byId = new Map<string, { id: string; type: string; payload: string }>();
   if (funnel.length > 0) {
     const rows = (await c.env.DB.prepare(
       `SELECT id, type, payload FROM commands
@@ -147,10 +152,31 @@ relayRoutes.post("/:id/results", async (c) => {
     )
       .bind(relay.id, ...funnel.map((f) => f.command_id))
       .all()) as unknown as { results: Array<{ id: string; type: string; payload: string }> };
-    const byId = new Map(rows.results.map((row) => [row.id, row]));
+    for (const row of rows.results) byId.set(row.id, row);
     for (const f of funnel) {
       const row = byId.get(f.command_id);
       if (!row) continue;
+      if (row.type === "post" || row.type === "reply" || row.type === "quote") {
+        const draftId = (JSON.parse(row.payload) as { draft_id?: string }).draft_id;
+        const created = (f.output as { tweet_id?: string }).tweet_id;
+        if (draftId && created) {
+          draftUpdates.push(
+            c.env.DB.prepare(
+              "UPDATE drafts SET status = 'done', result_tweet_id = ?, executed_at = ? WHERE id = ? AND user_id = ? AND command_id = ?",
+            ).bind(created, now, draftId, relay.user_id, f.command_id),
+          );
+        } else if (draftId) {
+          // A write that succeeded but reported no tweet id is treated as a
+          // failure: the draft must never stay executing forever. The dedupe
+          // row stays, so the tweet is not engaged twice.
+          draftUpdates.push(
+            c.env.DB.prepare(
+              "UPDATE drafts SET status = 'failed', executed_at = ? WHERE user_id = ? AND command_id = ?",
+            ).bind(now, relay.user_id, f.command_id),
+          );
+        }
+        continue;
+      }
       ingest.push(
         ...resultCandidates(c.env.DB, row, f.output, {
           userId: relay.user_id,
@@ -160,7 +186,32 @@ relayRoutes.post("/:id/results", async (c) => {
       );
     }
   }
-  if (ingest.length > 0) await c.env.DB.batch(ingest);
+  // Failed write commands mark their draft failed (terminal; visible in the
+  // inbox). The command row already carries the relay's error output.
+  if (writes.length > 0) {
+    const rows = (await c.env.DB.prepare(
+      `SELECT id, payload FROM commands
+       WHERE relay_id = ? AND id IN (${writes.map(() => "?").join(",")})`,
+    )
+      .bind(relay.id, ...writes.map((w) => w.command_id))
+      .all()) as unknown as { results: Array<{ id: string; payload: string }> };
+    for (const row of rows.results) {
+      let payload: { draft_id?: string } = {};
+      try {
+        payload = JSON.parse(row.payload) as { draft_id?: string };
+      } catch {
+        continue;
+      }
+      if (!payload.draft_id) continue;
+      draftUpdates.push(
+        c.env.DB.prepare(
+          "UPDATE drafts SET status = 'failed', executed_at = ? WHERE user_id = ? AND command_id = ?",
+        ).bind(now, relay.user_id, row.id),
+      );
+    }
+  }
+  const all = [...ingest, ...draftUpdates];
+  if (all.length > 0) await c.env.DB.batch(all);
   return c.json({ updated });
 });
 

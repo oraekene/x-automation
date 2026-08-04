@@ -32,6 +32,12 @@ beforeAll(async () => {
       stubCalls += 1;
       lastBody = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
       res.setHeader("content-type", "application/json");
+      const system = ((lastBody.messages as Array<{ role: string; content: string }> | undefined)?.[0]?.content) ?? "";
+      if (system.includes("draft X")) {
+        // Content-generation call (ticket 11): fixed fixture text.
+        res.end(JSON.stringify(verdictBody({ text: "generated reply text" })));
+        return;
+      }
       switch (mode) {
         case "reply":
           res.end(JSON.stringify(verdictBody({ action: "reply", reason: "on-topic", priority: 3 })));
@@ -249,11 +255,11 @@ describe("POST /api/funnel/target", () => {
       const { automation_id } = await setup(mf, 3);
 
       await runTarget(mf, { automation_id });
-      expect(stubCalls).toBe(3);
+      expect(stubCalls).toBe(6); // 3 verdicts + 3 content calls
 
       const again = await runTarget(mf, { automation_id });
       expect(again.automations![0]).toMatchObject({ judged: 0, drafts: 0 });
-      expect(stubCalls).toBe(3);
+      expect(stubCalls).toBe(6);
       expect((await listDrafts(mf)).drafts).toHaveLength(3);
     } finally {
       await mf.dispose();
@@ -335,7 +341,7 @@ describe("POST /api/funnel/target", () => {
 
       const result = await runTarget(mf, { automation_id });
       expect(result.automations![0]).toMatchObject({ actionable: 2, judged: 2, drafts: 2 });
-      expect(stubCalls).toBe(2);
+      expect(stubCalls).toBe(4); // 2 verdicts + 2 content calls
     } finally {
       await mf.dispose();
     }
