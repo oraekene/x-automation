@@ -72,10 +72,26 @@ const PAGE = `<!doctype html>
 <button id="runFilter">Run filter</button>
 
 <h2>Funnel audit</h2>
-<p class="muted">Every rule decision, newest first: Stage 2 (filter keep/reject) and Stage 4 (guardrail block).</p>
+<p class="muted">Every rule decision, newest first: Stage 2 (filter keep/reject), Stage 4 (guardrail block) and Stage 3 (ai draft/skip/fail).</p>
 <table>
   <thead><tr><th>When</th><th>Stage</th><th>Decision</th><th>Rule</th><th>Reason</th><th>Score</th></tr></thead>
   <tbody id="decisionRows"></tbody>
+</table>
+
+<h2>AI targeting</h2>
+<p class="muted">One OpenAI-compatible provider per account (key stays with you). Presets prefill the free endpoints from the spec.</p>
+<form id="providerForm">
+  <label>Preset <select id="pPreset"></select></label>
+  <label>Base URL <input id="pBaseUrl" size="40" required></label>
+  <label>Model <input id="pModel" placeholder="gpt-4o-mini" required></label>
+  <label>API key <input id="pApiKey" type="password" placeholder="••••••••"></label>
+  <button type="submit">Save provider</button>
+</form>
+<p class="muted">Run targeting on the actionable survivors (POST /api/funnel/target); failed verdicts are retried on the next run and hourly.</p>
+<button id="runTarget">Run targeting</button>
+<table>
+  <thead><tr><th>When</th><th>Action</th><th>Priority</th><th>Reason</th><th>Automation</th><th>Author</th><th>Text</th></tr></thead>
+  <tbody id="draftRows"></tbody>
 </table>
 
 <script>
@@ -84,7 +100,12 @@ const PAGE = `<!doctype html>
   const autoRows = document.getElementById("autoRows");
   const candRows = document.getElementById("candRows");
   const decisionRows = document.getElementById("decisionRows");
+  const draftRows = document.getElementById("draftRows");
   const relaySelect = document.getElementById("aRelay");
+  const presetSelect = document.getElementById("pPreset");
+  const pBaseUrl = document.getElementById("pBaseUrl");
+  const pModel = document.getElementById("pModel");
+  const pApiKey = document.getElementById("pApiKey");
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[m]));
   async function sendEcho(id) {
     await fetch("/api/relays/" + id + "/commands", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ type: "echo", payload: { message: "ping" } }) });
@@ -157,6 +178,51 @@ const PAGE = `<!doctype html>
       decisionRows.appendChild(tr);
     }
   }
+  async function refreshProvider() {
+    const res = await fetch("/api/provider", { headers: { "accept": "application/json" } });
+    const data = await res.json();
+    pApiKey.placeholder = data.provider ? (data.provider.key_masked || "••••••••") : "sk-...";
+    if (data.provider) {
+      pBaseUrl.value = data.provider.base_url;
+      pModel.value = data.provider.model;
+    }
+  }
+  async function refreshPresets() {
+    const res = await fetch("/api/provider/presets", { headers: { "accept": "application/json" } });
+    const data = await res.json();
+    presetSelect.innerHTML = "";
+    const blank = document.createElement("option");
+    blank.value = "";
+    blank.textContent = "(custom)";
+    presetSelect.appendChild(blank);
+    for (const p of data.presets) {
+      const opt = document.createElement("option");
+      opt.value = p.base_url;
+      opt.textContent = p.name;
+      presetSelect.appendChild(opt);
+    }
+  }
+  async function refreshDrafts() {
+    const res = await fetch("/api/drafts", { headers: { "accept": "application/json" } });
+    const data = await res.json();
+    draftRows.innerHTML = "";
+    for (const d of data.drafts) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = \`<td>\${new Date(d.created_at * 1000).toISOString()}</td><td>\${esc(d.action)}</td>
+        <td>\${d.priority}</td><td>\${esc(d.reason)}</td><td>\${esc(d.automation_name)}</td>
+        <td>@\${esc(d.author)}</td><td>\${esc(d.text.slice(0, 80))}</td>\`;
+      draftRows.appendChild(tr);
+    }
+  }
+  async function runTargeting() {
+    const res = await fetch("/api/funnel/target", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    const data = await res.json();
+    if (data.error) { alert("targeting failed: " + data.error); return; }
+    const failed = (data.automations || []).reduce((n, a) => n + (a.failures || 0), 0);
+    if (failed > 0) alert("Targeting ran but " + failed + " verdicts failed — they will be retried.");
+    refreshDecisions();
+    refreshDrafts();
+  }
   async function runFilter() {
     await fetch("/api/funnel/filter", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
     refreshDecisions();
@@ -215,11 +281,24 @@ const PAGE = `<!doctype html>
     refreshAutomations();
   });
   document.getElementById("runFilter").addEventListener("click", runFilter);
+  document.getElementById("runTarget").addEventListener("click", runTargeting);
+  presetSelect.addEventListener("change", () => { if (presetSelect.value) pBaseUrl.value = presetSelect.value; });
+  document.getElementById("providerForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const body = { base_url: pBaseUrl.value.trim(), model: pModel.value.trim() };
+    if (pApiKey.value.trim()) body.api_key = pApiKey.value.trim();
+    await fetch("/api/provider", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    pApiKey.value = "";
+    refreshProvider();
+  });
   refresh();
   refreshAutomations();
   refreshCandidates();
   refreshDecisions();
-  setInterval(() => { refresh(); refreshAutomations(); refreshCandidates(); refreshDecisions(); }, 15000);
+  refreshPresets();
+  refreshProvider();
+  refreshDrafts();
+  setInterval(() => { refresh(); refreshAutomations(); refreshCandidates(); refreshDecisions(); refreshDrafts(); }, 15000);
 </script>
 </body>
 </html>`;

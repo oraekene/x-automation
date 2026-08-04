@@ -3,6 +3,7 @@ import { nowSeconds } from "./lib/crypto";
 import { commandInsert } from "./lib/command";
 import { safeParse } from "./lib/json";
 import { addIntervalInZone } from "./lib/time";
+import { runTargeting } from "./lib/target";
 
 export const TICK_CRON = "* * * * *";
 export const MAINT_CRON = "0 * * * *";
@@ -10,6 +11,7 @@ export const MAINT_CRON = "0 * * * *";
 const MAX_TICK_BATCH = 40; // 40 jobs x 2 statements stays under D1's 100-statement batch limit
 const MAX_AUTOMATION_BATCH = 20; // 20 automations x 3 statements per batch
 const STALE_CLAIM_MS = 2 * 60 * 60 * 1000;
+const MAX_AI_RETRY = 50; // bound the hourly AI sweep so free endpoints aren't hammered
 
 // Funnel pass caps: search walks up to 3 pages; the profile pass pulls recent
 // tweets from up to 3 matched profiles, one page each. Kept small so a single
@@ -128,6 +130,24 @@ export async function maintenance(env: Env): Promise<number> {
   return result.meta.changes;
 }
 
+// Hourly AI targeting retry: re-run Funnel Stage 3 for every user with an
+// active automation and a configured provider. Idempotent by construction —
+// already-judged candidates are skipped — so this only retries failures. The
+// cap is per user: one broken provider must not starve every other user's
+// retries for the hour.
+export async function retryAiTargeting(env: Env): Promise<number> {
+  const users = (await env.DB.prepare(
+    "SELECT DISTINCT user_id FROM automations WHERE status = 'active' ORDER BY user_id",
+  ).all()) as unknown as { results: Array<{ user_id: string }> };
+
+  let judged = 0;
+  for (const u of users.results) {
+    const result = await runTargeting(env, u.user_id, undefined, MAX_AI_RETRY);
+    for (const s of result.summaries) judged += s.judged;
+  }
+  return judged;
+}
+
 // Entry point for the Worker's scheduled handler; routes each cron slot.
 export async function runScheduled(controller: { cron: string | null }, env: Env): Promise<void> {
   switch (controller.cron) {
@@ -137,6 +157,7 @@ export async function runScheduled(controller: { cron: string | null }, env: Env
       break;
     case MAINT_CRON:
       await maintenance(env);
+      await retryAiTargeting(env);
       break;
   }
 }

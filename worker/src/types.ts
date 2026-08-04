@@ -92,12 +92,20 @@ export type DecisionRow = {
   relay_id: string;
   automation_id: string;
   candidate_id: string;
-  stage: "filter" | "guardrail";
-  decision: "keep" | "reject" | "block";
+  stage: "filter" | "guardrail" | "ai";
+  decision: "keep" | "reject" | "block" | "draft" | "skip" | "fail";
   rule: string;
   reason: string;
   score: number;
   acted_at: number;
+};
+
+export type ProviderRow = {
+  user_id: string;
+  base_url: string;
+  api_key: string;
+  model: string;
+  updated_at: number;
 };
 
 export type SearchCriteria = {

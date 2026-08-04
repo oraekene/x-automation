@@ -5,6 +5,8 @@ import { scheduleRoutes } from "./routes/schedules";
 import { automationRoutes } from "./routes/automations";
 import { candidateRoutes } from "./routes/candidates";
 import { funnelRoutes } from "./routes/funnel";
+import { providerRoutes } from "./routes/provider";
+import { draftRoutes } from "./routes/drafts";
 import { PAGE } from "./dashboard";
 import { getUser } from "./auth";
 import { runScheduled } from "./scheduled";
@@ -26,6 +28,8 @@ app.route("/api/schedules", scheduleRoutes);
 app.route("/api/automations", automationRoutes);
 app.route("/api/candidates", candidateRoutes);
 app.route("/api/funnel", funnelRoutes);
+app.route("/api/provider", providerRoutes);
+app.route("/api/drafts", draftRoutes);
 
 app.get("/", async (c) => {
   const user = await getUser(c);

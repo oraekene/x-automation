@@ -1,16 +1,18 @@
 // The funnel audit trail (ticket 09): one shared INSERT shape for every rule
-// decision, so filter and guardrail runs write identically.
+// decision, so filter, guardrail and AI-targeting runs all write identically.
 
 import type { RuleName } from "./funnel";
+
+export type AiStageName = "ai_target" | "ai_fail";
 
 export type DecisionInput = {
   userId: string;
   relayId: string;
   automationId: string;
   candidateId: string;
-  stage: "filter" | "guardrail";
-  decision: "keep" | "reject" | "block";
-  rule: RuleName;
+  stage: "filter" | "guardrail" | "ai";
+  decision: "keep" | "reject" | "block" | "draft" | "skip" | "fail";
+  rule: RuleName | AiStageName;
   reason: string;
   score: number;
   actedAt: number;

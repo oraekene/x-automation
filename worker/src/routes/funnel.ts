@@ -1,35 +1,12 @@
 import { Hono } from "hono";
-import type { AutomationRow, CandidateRow, DecisionRow, Env, RelayRow } from "../types";
+import type { AutomationRow, DecisionRow, Env } from "../types";
 import { getUser } from "../auth";
 import { nowSeconds } from "../lib/crypto";
 import { decisionInsert } from "../lib/decisions";
-import { applyGuardrails, filterCandidates, parseBudgets, parseRules } from "../lib/funnel";
-import { startOfDayInZone } from "../lib/time";
-import { safeParse } from "../lib/json";
+import { deriveActionable } from "../lib/funnel-run";
+import { runTargeting } from "../lib/target";
 
 export const funnelRoutes = new Hono<{ Bindings: Env }>();
-
-const MAX_POOL = 500;
-
-// How many of today's acted actions each bucket has used, per account (relay).
-// `post` and `quote` count as posts; `reply` counts as replies.
-export async function dailyUsage(
-  db: D1Database,
-  relayId: string,
-  startOfDaySec: number,
-): Promise<{ posts: number; replies: number }> {
-  const rows = (await db
-    .prepare("SELECT action, COUNT(*) AS n FROM dedup WHERE relay_id = ? AND acted_at >= ? GROUP BY action")
-    .bind(relayId, startOfDaySec)
-    .all()) as unknown as { results: Array<{ action: string; n: number }> };
-  let posts = 0;
-  let replies = 0;
-  for (const r of rows.results) {
-    if (r.action === "reply") replies += r.n;
-    else posts += r.n;
-  }
-  return { posts, replies };
-}
 
 // POST /api/funnel/filter — run the Stage 2 heuristic filter and Stage 4
 // guardrails over one automation's candidate pool (or all the user's active
@@ -51,46 +28,15 @@ funnelRoutes.post("/filter", async (c) => {
         .all()) as unknown as { results: AutomationRow[] });
   if (body.automation_id && rows.results.length === 0) return c.json({ error: "not found" }, 404);
 
-  const nowMs = Date.now();
   const nowSec = nowSeconds();
   const audits: D1PreparedStatement[] = [];
   const summaries: Array<Record<string, unknown>> = [];
 
   for (const a of rows.results) {
-    const rules = parseRules(safeParse(a.rules));
-    const budgets = parseBudgets(safeParse(a.budgets));
-    const relay = (await c.env.DB.prepare("SELECT * FROM relays WHERE id = ? AND user_id = ?")
-      .bind(a.relay_id, user.id)
-      .first()) as RelayRow | undefined;
-    if (!relay) continue;
+    const derived = await deriveActionable(c.env, user.id, a);
+    if (!derived) continue;
 
-    const pool = (await c.env.DB.prepare(
-      "SELECT * FROM candidates WHERE automation_id = ? ORDER BY found_at DESC, tweet_id DESC LIMIT ?",
-    )
-      .bind(a.id, MAX_POOL)
-      .all()) as unknown as { results: CandidateRow[] };
-
-    const { kept, rejected } = filterCandidates(pool.results, rules, nowMs);
-
-    const dedupRows = (await c.env.DB.prepare("SELECT tweet_id FROM dedup WHERE user_id = ?")
-      .bind(user.id)
-      .all()) as unknown as { results: Array<{ tweet_id: string }> };
-    const dedupTweetIds = new Set(dedupRows.results.map((r) => r.tweet_id));
-    // Budgets are per account/day: count against one shared day boundary (UTC)
-    // so automations on the same account in different timezones agree on the
-    // day. Quiet hours below still use the automation's own timezone.
-    const usage = await dailyUsage(c.env.DB, a.relay_id, Math.floor(startOfDayInZone(nowMs, "UTC") / 1000));
-
-    const blocked = applyGuardrails(kept, {
-      budgets,
-      relayEnabled: relay.enabled !== 0,
-      timezone: a.timezone,
-      nowMs,
-      dedupTweetIds,
-      usage,
-    });
-
-    for (const d of [...rejected, ...kept]) {
+    for (const d of [...derived.rejected, ...derived.kept]) {
       audits.push(
         decisionInsert(c.env.DB, {
           userId: user.id,
@@ -106,7 +52,7 @@ funnelRoutes.post("/filter", async (c) => {
         }),
       );
     }
-    for (const b of blocked) {
+    for (const b of derived.blocked) {
       audits.push(
         decisionInsert(c.env.DB, {
           userId: user.id,
@@ -125,11 +71,11 @@ funnelRoutes.post("/filter", async (c) => {
 
     summaries.push({
       automation_id: a.id,
-      candidates: pool.results.length,
-      kept: kept.length,
-      rejected: rejected.length,
-      blocked: blocked.length,
-      actionable: kept.length - blocked.length,
+      candidates: derived.pool.length,
+      kept: derived.kept.length,
+      rejected: derived.rejected.length,
+      blocked: derived.blocked.length,
+      actionable: derived.kept.length - derived.blocked.length,
     });
   }
 
@@ -164,4 +110,21 @@ funnelRoutes.get("/decisions", async (c) => {
       acted_at: r.acted_at,
     })),
   });
+});
+
+// POST /api/funnel/target — Funnel Stage 3: AI targeting. Same automation
+// selection as /filter (shared derivation in lib/funnel-run): ask the
+// configured provider for a verdict on each actionable candidate that has no
+// verdict yet. Reply/quote verdicts become drafts; skips and failures land in
+// the audit trail (stage 'ai'). Idempotent: candidates already judged are
+// never re-called, so re-running only retries failures.
+funnelRoutes.post("/target", async (c) => {
+  const user = await getUser(c);
+  if (!user) return c.json({ error: "unauthorized" }, 401);
+  const body = (await c.req.json().catch(() => ({}))) as { automation_id?: string };
+
+  const result = await runTargeting(c.env, user.id, body.automation_id);
+  if (result.error === "not_found") return c.json({ error: "not found" }, 404);
+  if (result.error === "no_provider") return c.json({ error: "no provider configured" }, 409);
+  return c.json({ automations: result.summaries });
 });
