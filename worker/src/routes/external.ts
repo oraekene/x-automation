@@ -9,11 +9,14 @@ import { hashToken, nowSeconds } from "../lib/crypto";
 import { draftInsert } from "../lib/drafts";
 import { commandInsert } from "../lib/command";
 
-export const externalRoutes = new Hono<{ Bindings: Env }>();
+type ExternalEnv = { Bindings: Env; Variables: { token: ApiTokenRow } };
+export const externalRoutes = new Hono<ExternalEnv>();
 
-async function tokenAuth(c: { req: { header: (name: string) => string | undefined }; env: Env }): Promise<ApiTokenRow | null> {
+// Token-auth middleware: resolves the Bearer token to an ApiTokenRow and
+// stores it on `c.set("token", ...)`. All downstream handlers read from there.
+externalRoutes.use("*", async (c, next) => {
   const auth = c.req.header("Authorization");
-  if (!auth?.startsWith("Bearer ")) return null;
+  if (!auth?.startsWith("Bearer ")) return c.json({ error: "unauthorized" }, 401);
   const token = auth.slice("Bearer ".length);
   const hash = await hashToken(token);
   const row = (await c.env.DB.prepare(
@@ -21,15 +24,16 @@ async function tokenAuth(c: { req: { header: (name: string) => string | undefine
   )
     .bind(hash)
     .first()) as ApiTokenRow | undefined;
-  return row ?? null;
-}
+  if (!row) return c.json({ error: "unauthorized" }, 401);
+  c.set("token", row);
+  return next();
+});
 
 // POST /api/targeting — submit a targeting profile that drives the funnel for
 // the user's first relay. The payload is stored as a new automation's
 // targeting profile.
 externalRoutes.post("/targeting", async (c) => {
-  const token = await tokenAuth(c);
-  if (!token) return c.json({ error: "unauthorized" }, 401);
+  const token = c.get("token");
   const body = (await c.req.json().catch(() => ({}))) as {
     relay_id?: string;
     search_criteria?: Record<string, unknown>;
@@ -68,8 +72,7 @@ externalRoutes.post("/targeting", async (c) => {
 // POST /api/content — webhook content source. Accepts text and optionally a
 // target tweet, creates a draft ready for approval or auto-execution.
 externalRoutes.post("/content", async (c) => {
-  const token = await tokenAuth(c);
-  if (!token) return c.json({ error: "unauthorized" }, 401);
+  const token = c.get("token");
   const body = (await c.req.json().catch(() => ({}))) as {
     relay_id?: string;
     text?: string;
@@ -110,8 +113,7 @@ externalRoutes.post("/content", async (c) => {
 
 // POST /api/results — receive results from external tools into the audit trail.
 externalRoutes.post("/results", async (c) => {
-  const token = await tokenAuth(c);
-  if (!token) return c.json({ error: "unauthorized" }, 401);
+  const token = c.get("token");
   const body = (await c.req.json().catch(() => ({}))) as {
     relay_id?: string;
     draft_id?: number;

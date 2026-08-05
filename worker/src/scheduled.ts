@@ -38,46 +38,29 @@ function nextSlotMs(nextRunAtMs: number, intervalMinutes: number, timezone: stri
 
 // Shared due-job fan-out: update each job's next_run_at/last_run_at and batch
 // whatever commands the job's producer enqueues, in one D1 batch per table.
-// One-off schedules are deactivated after firing.
+// The caller's `makeCommands` can return an optional custom update statement
+// per job (e.g. to deactivate one-off schedules) in addition to commands.
 async function fanOutDue<T extends DueJob>(
   env: Env,
   table: "schedules" | "automations",
   jobs: T[],
-  makeCommands: (job: T, nextRunAt: number, nowSec: number) => D1PreparedStatement[],
+  makeCommands: (job: T, nextRunAt: number, nowSec: number) => { commands: D1PreparedStatement[]; update?: D1PreparedStatement },
 ): Promise<number> {
   const nowMs = Date.now();
   const nowSec = Math.floor(nowMs / 1000);
   const statements: D1PreparedStatement[] = [];
   for (const job of jobs) {
     const nextMs = nextSlotMs(job.next_run_at * 1000, job.interval_minutes, job.timezone, nowMs);
-    // One-off schedules are deactivated after their single run.
-    if (table === "schedules") {
-      const row = (await env.DB.prepare("SELECT mode FROM schedules WHERE id = ?")
-        .bind(job.id)
-        .first()) as { mode?: string } | undefined;
-      if (row?.mode === "one_off") {
-        statements.push(
-          env.DB.prepare(`UPDATE ${table} SET status = 'done', last_run_at = ? WHERE id = ?`).bind(nowSec, job.id),
-        );
-      } else {
-        statements.push(
-          env.DB.prepare(`UPDATE ${table} SET next_run_at = ?, last_run_at = ? WHERE id = ?`).bind(
-            Math.floor(nextMs / 1000),
-            nowSec,
-            job.id,
-          ),
-        );
-      }
+    const nextRunAt = Math.floor(nextMs / 1000);
+    const { commands, update } = makeCommands(job, nextRunAt, nowSec);
+    if (update) {
+      statements.push(update);
     } else {
       statements.push(
-        env.DB.prepare(`UPDATE ${table} SET next_run_at = ?, last_run_at = ? WHERE id = ?`).bind(
-          Math.floor(nextMs / 1000),
-          nowSec,
-          job.id,
-        ),
+        env.DB.prepare(`UPDATE ${table} SET next_run_at = ?, last_run_at = ? WHERE id = ?`).bind(nextRunAt, nowSec, job.id),
       );
     }
-    statements.push(...makeCommands(job, Math.floor(nextMs / 1000), nowSec));
+    statements.push(...commands);
   }
   if (statements.length > 0) await env.DB.batch(statements);
   return jobs.length;
@@ -88,14 +71,19 @@ async function fanOutDue<T extends DueJob>(
 export async function tick(env: Env): Promise<number> {
   const nowSec = Math.floor(Date.now() / 1000);
   const due = (await env.DB.prepare(
-    "SELECT id, relay_id, type, payload, interval_minutes, timezone, next_run_at FROM schedules WHERE status = 'active' AND next_run_at <= ? ORDER BY next_run_at ASC LIMIT ?",
+    "SELECT id, relay_id, type, payload, interval_minutes, timezone, next_run_at, mode FROM schedules WHERE status = 'active' AND next_run_at <= ? ORDER BY next_run_at ASC LIMIT ?",
   )
     .bind(nowSec, MAX_TICK_BATCH)
     .all()) as unknown as { results: DueScheduleRow[] };
 
-  return fanOutDue(env, "schedules", due.results, (job, _next, now) => [
-    commandInsert(env.DB, crypto.randomUUID(), job.relay_id, job.type, job.payload, now),
-  ]);
+  return fanOutDue(env, "schedules", due.results, (job, nextRunAt, now) => {
+    const commands = [commandInsert(env.DB, crypto.randomUUID(), job.relay_id, job.type, job.payload, now)];
+    // One-off schedules are deactivated after firing.
+    if (job.mode === "one_off") {
+      return { commands, update: env.DB.prepare("UPDATE schedules SET status = 'done', last_run_at = ? WHERE id = ?").bind(now, job.id) };
+    }
+    return { commands };
+  });
 }
 
 // Fan out every due automation (Funnel Stage 1): one deterministic search
@@ -113,7 +101,7 @@ export async function tickAutomations(env: Env): Promise<number> {
   return fanOutDue(env, "automations", due.results, (job, _next, now) => {
     const criteria = safeParse(job.search_criteria) as SearchCriteria;
     const targeting = safeParse(job.targeting) as TargetingProfile;
-    return [
+    const commands = [
       commandInsert(
         env.DB,
         crypto.randomUUID(),
@@ -136,6 +124,7 @@ export async function tickAutomations(env: Env): Promise<number> {
         now,
       ),
     ];
+    return { commands };
   });
 }
 

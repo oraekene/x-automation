@@ -28,6 +28,7 @@ export type DueScheduleRow = {
   interval_minutes: number;
   timezone: string;
   next_run_at: number;
+  mode?: string;
 };
 
 export type RelayRow = {
