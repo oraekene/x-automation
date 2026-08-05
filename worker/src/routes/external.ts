@@ -8,6 +8,7 @@ import type { Env, ApiTokenRow, RelayRow } from "../types";
 import { hashToken, nowSeconds } from "../lib/crypto";
 import { draftInsert } from "../lib/drafts";
 import { commandInsert } from "../lib/command";
+import { runTargeting } from "../lib/target";
 
 type ExternalEnv = { Bindings: Env; Variables: { token: ApiTokenRow } };
 export const externalRoutes = new Hono<ExternalEnv>();
@@ -30,8 +31,9 @@ externalRoutes.use("*", async (c, next) => {
 });
 
 // POST /api/targeting — submit a targeting profile that drives the funnel for
-// the user's first relay. The payload is stored as a new automation's
-// targeting profile.
+// the user's first relay. Creates the automation, runs the targeting pass
+// synchronously, and returns the results so the caller (e.g. Hermes Agent
+// plugin) can act on them immediately.
 externalRoutes.post("/targeting", async (c) => {
   const token = c.get("token");
   const body = (await c.req.json().catch(() => ({}))) as {
@@ -66,7 +68,15 @@ externalRoutes.post("/targeting", async (c) => {
       nowSec,
     )
     .run();
-  return c.json({ automation_id: id }, 201);
+
+  // Run the targeting pass synchronously so the caller gets results back.
+  const result = await runTargeting(c.env, token.user_id, id);
+
+  return c.json({
+    automation_id: id,
+    targeting: result.summaries[0] ?? { automation_id: id, actionable: 0, judged: 0, drafts: 0, skips: 0, failures: 0 },
+    error: result.error ?? null,
+  }, 201);
 });
 
 // POST /api/content — webhook content source. Accepts text and optionally a
