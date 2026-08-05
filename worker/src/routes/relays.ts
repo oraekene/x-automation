@@ -5,6 +5,7 @@ import { commandInsert } from "../lib/command";
 import { resultCandidates } from "../lib/candidates";
 import { safeParse } from "../lib/json";
 import { relayOwnedBy } from "../lib/ownership";
+import { processInboundTweets, updateConversationMessageTweetId } from "../lib/conversations";
 import { getUser } from "../auth";
 
 const CLAIM_LEASE_S = 600;
@@ -140,10 +141,13 @@ relayRoutes.post("/:id/results", async (c) => {
   // Funnel commands (Funnel Stage 1) land their reported tweets in the
   // candidate pool, deduped per user+tweet. Write commands (draft execution,
   // ticket 11) land their outcome back on the draft: done with the created
-  // tweet id, or failed. Re-select only the successful commands in one bounded
-  // query and derive their inserts from the shared lib/candidates shapes.
+  // tweet id, or failed. inbound_scan commands (ticket 12) feed tweets into
+  // the conversation engine. Re-select only the successful commands in one
+  // bounded query and derive their inserts from the shared lib/candidates
+  // shapes.
   const ingest: D1PreparedStatement[] = [];
   const draftUpdates: D1PreparedStatement[] = [];
+  const inboundScans: Array<{ command_id: string; output: unknown }> = [];
   const byId = new Map<string, { id: string; type: string; payload: string }>();
   if (funnel.length > 0) {
     const rows = (await c.env.DB.prepare(
@@ -156,6 +160,10 @@ relayRoutes.post("/:id/results", async (c) => {
     for (const f of funnel) {
       const row = byId.get(f.command_id);
       if (!row) continue;
+      if (row.type === "inbound_scan") {
+        inboundScans.push({ command_id: f.command_id, output: f.output });
+        continue;
+      }
       if (row.type === "post" || row.type === "reply" || row.type === "quote") {
         const draftId = (JSON.parse(row.payload) as { draft_id?: string }).draft_id;
         const created = (f.output as { tweet_id?: string }).tweet_id;
@@ -165,10 +173,18 @@ relayRoutes.post("/:id/results", async (c) => {
               "UPDATE drafts SET status = 'done', result_tweet_id = ?, executed_at = ? WHERE id = ? AND user_id = ? AND command_id = ?",
             ).bind(created, now, draftId, relay.user_id, f.command_id),
           );
+          // Fill outbound message tweet_id for conversation drafts.
+          const draft = (await c.env.DB.prepare("SELECT conversation_id FROM drafts WHERE id = ?")
+            .bind(draftId)
+            .first()) as { conversation_id?: string } | undefined;
+          if (draft?.conversation_id) {
+            draftUpdates.push(
+              c.env.DB.prepare(
+                "UPDATE messages SET tweet_id = ? WHERE draft_id = ? AND role = 'outbound'",
+              ).bind(created, draftId),
+            );
+          }
         } else if (draftId) {
-          // A write that succeeded but reported no tweet id is treated as a
-          // failure: the draft must never stay executing forever. The dedupe
-          // row stays, so the tweet is not engaged twice.
           draftUpdates.push(
             c.env.DB.prepare(
               "UPDATE drafts SET status = 'failed', executed_at = ? WHERE user_id = ? AND command_id = ?",
@@ -184,6 +200,13 @@ relayRoutes.post("/:id/results", async (c) => {
           foundAt: now,
         }),
       );
+    }
+  }
+  // Process inbound_scan results through the conversation engine.
+  for (const scan of inboundScans) {
+    const tweets = (scan.output as { tweets?: Array<{ id: string; author: string; text: string; in_reply_to_tweet_id: string | null }> })?.tweets;
+    if (Array.isArray(tweets) && tweets.length > 0) {
+      await processInboundTweets(c.env, relay.id, relay.user_id, tweets);
     }
   }
   // Failed write commands mark their draft failed (terminal; visible in the

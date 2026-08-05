@@ -136,6 +136,105 @@ export async function aiTargetingVerdict(opts: {
   return parseVerdict(content);
 }
 
+// Conversation turn generation: given the conversation history and an inbound
+// tweet, produce a reply text and a semantic verdict (continue / close_with_message /
+// close_silent). One call returns both, so the caller doesn't need to stitch
+// two LLM round-trips.
+export type ConversationTurnVerdict = "continue" | "close_with_message" | "close_silent";
+
+export type ConversationTurnOutcome =
+  | { ok: true; text: string; verdict: ConversationTurnVerdict; reason: string }
+  | { ok: false; error: string };
+
+const CONVERSATION_SYSTEM_PROMPT = [
+  "You are continuing a conversation on X (Twitter) on behalf of the user.",
+  "You will see the conversation history followed by a new inbound message.",
+  "Draft a reply that continues the conversation naturally, or decide to close it.",
+  "Respond with ONLY a JSON object:",
+  '{"text": "<your reply under 280 chars>", "verdict": "continue" | "close_with_message" | "close_silent", "reason": "<one sentence why>"}',
+  "verdict: continue = keep the conversation going; close_with_message = send a final reply and end; close_silent = end without replying.",
+  "close when: goal is met, the other party is repeating themselves, or the conversation has run its course.",
+].join("\n");
+
+function buildConversationUserPrompt(opts: {
+  conversationHistory: Array<{ role: "inbound" | "outbound"; text: string }>;
+  inboundText: string;
+  inboundAuthor: string;
+}): string {
+  const lines: string[] = ["Conversation history:"];
+  for (const m of opts.conversationHistory) {
+    const label = m.role === "inbound" ? opts.inboundAuthor : "You";
+    lines.push(`${label}: ${m.text}`);
+  }
+  lines.push("");
+  lines.push(`New message from ${opts.inboundAuthor}: ${opts.inboundText}`);
+  return lines.join("\n");
+}
+
+function parseConversationTurn(content: string): ConversationTurnOutcome {
+  const raw = extractJsonObject(content);
+  if (raw === undefined) return { ok: false, error: "parse" };
+  const v = raw as Record<string, unknown>;
+  const validVerdicts: ConversationTurnVerdict[] = ["continue", "close_with_message", "close_silent"];
+  if (!validVerdicts.includes(v.verdict as ConversationTurnVerdict)) return { ok: false, error: "invalid" };
+  if (typeof v.reason !== "string" || v.reason.trim() === "") return { ok: false, error: "invalid" };
+  // close_silent has no text (no reply sent); other verdicts require text.
+  if (v.verdict !== "close_silent") {
+    if (typeof v.text !== "string" || v.text.trim().length === 0) return { ok: false, error: "invalid" };
+    if (v.text.length > MAX_DRAFT_LENGTH) return { ok: false, error: "too_long" };
+  }
+  return {
+    ok: true,
+    text: typeof v.text === "string" ? v.text.trim() : "",
+    verdict: v.verdict as ConversationTurnVerdict,
+    reason: v.reason.trim(),
+  };
+}
+
+export async function draftTurn(opts: {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  conversationHistory: Array<{ role: "inbound" | "outbound"; text: string }>;
+  inboundText: string;
+  inboundAuthor: string;
+}): Promise<ConversationTurnOutcome> {
+  const userPrompt = buildConversationUserPrompt(opts);
+
+  let res: Response;
+  try {
+    res = await fetch(`${opts.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${opts.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: opts.model,
+        messages: [
+          { role: "system", content: CONVERSATION_SYSTEM_PROMPT },
+          { role: "user", content: userPrompt },
+        ],
+      }),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+  } catch {
+    return { ok: false, error: "network" };
+  }
+
+  if (!res.ok) return { ok: false, error: `http_${res.status}` };
+
+  let data: unknown;
+  try {
+    data = await res.json();
+  } catch {
+    return { ok: false, error: "parse" };
+  }
+  const content = (data as { choices?: Array<{ message?: { content?: string } }> })?.choices?.[0]?.message?.content;
+  if (typeof content !== "string" || content.trim() === "") return { ok: false, error: "parse" };
+  return parseConversationTurn(content);
+}
+
 // Keys are stored per user but never echoed back in full; the dashboard form
 // shows only the last 4 characters.
 export function maskApiKey(key: string): string {

@@ -4,7 +4,7 @@
 
 **Blocked by:** 02
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [x] Cookies stored encrypted at rest in a relay-local store, survive restart
 - [x] TLS impersonation and request shaping (UA, sec-ch-ua, x-client-transaction-id) applied to all requests

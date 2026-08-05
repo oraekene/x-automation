@@ -16,24 +16,40 @@ scheduleRoutes.post("/", async (c) => {
     name?: string;
     type?: string;
     payload?: unknown;
+    mode?: string;
     interval_minutes?: number;
+    scheduled_at?: number;
     timezone?: string;
   };
   if (!body.relay_id) return c.json({ error: "relay_id required" }, 400);
   if (!(await relayOwnedBy(c.env.DB, body.relay_id, user.id))) {
     return c.json({ error: "not found" }, 404);
   }
-  const interval = coerceIntervalMinutes(body.interval_minutes);
-  if (!interval.ok) return c.json({ error: "interval_minutes must be at least 1" }, 400);
+  const mode = body.mode === "one_off" ? "one_off" : "recurring";
   const timezone = body.timezone ?? "UTC";
   if (!isValidTimeZone(timezone)) return c.json({ error: "invalid timezone" }, 400);
 
   const nowSec = nowSeconds();
-  const nextRunAt = Math.floor(addIntervalInZone(Date.now(), interval.minutes, timezone) / 1000);
+  let intervalMinutes: number;
+  let nextRunAt: number;
+
+  if (mode === "one_off") {
+    if (!body.scheduled_at || body.scheduled_at <= nowSec) {
+      return c.json({ error: "scheduled_at must be a future epoch seconds" }, 400);
+    }
+    intervalMinutes = 1; // tick checks next_run_at, so interval is irrelevant for one-off
+    nextRunAt = body.scheduled_at;
+  } else {
+    const interval = coerceIntervalMinutes(body.interval_minutes);
+    if (!interval.ok) return c.json({ error: "interval_minutes must be at least 1" }, 400);
+    intervalMinutes = interval.minutes;
+    nextRunAt = Math.floor(addIntervalInZone(Date.now(), interval.minutes, timezone) / 1000);
+  }
+
   const id = crypto.randomUUID();
   await c.env.DB.prepare(
-    `INSERT INTO schedules (id, user_id, relay_id, name, type, payload, status, interval_minutes, timezone, next_run_at, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`,
+    `INSERT INTO schedules (id, user_id, relay_id, name, type, payload, status, mode, interval_minutes, timezone, next_run_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`,
   )
     .bind(
       id,
@@ -42,13 +58,14 @@ scheduleRoutes.post("/", async (c) => {
       body.name ?? "schedule",
       body.type ?? "echo",
       JSON.stringify(body.payload ?? {}),
-      interval.minutes,
+      mode,
+      intervalMinutes,
       timezone,
       nextRunAt,
       nowSec,
     )
     .run();
-  return c.json({ schedule_id: id, next_run_at: nextRunAt }, 201);
+  return c.json({ schedule_id: id, next_run_at: nextRunAt, mode }, 201);
 });
 
 scheduleRoutes.get("/", async (c) => {
@@ -67,6 +84,7 @@ scheduleRoutes.get("/", async (c) => {
       type: r.type,
       payload: safeParse(r.payload),
       status: r.status,
+      mode: (r as ScheduleRow & { mode?: string }).mode ?? "recurring",
       interval_minutes: r.interval_minutes,
       timezone: r.timezone,
       next_run_at: r.next_run_at,
@@ -74,4 +92,17 @@ scheduleRoutes.get("/", async (c) => {
       created_at: r.created_at,
     })),
   });
+});
+
+scheduleRoutes.delete("/:id", async (c) => {
+  const user = await getUser(c);
+  if (!user) return c.json({ error: "unauthorized" }, 401);
+  const id = c.req.param("id");
+  const result = await c.env.DB.prepare(
+    "UPDATE schedules SET status = 'cancelled' WHERE id = ? AND user_id = ? AND status = 'active'",
+  )
+    .bind(id, user.id)
+    .run();
+  if (result.meta.changes === 0) return c.json({ error: "not found or already cancelled" }, 404);
+  return c.json({ ok: true });
 });

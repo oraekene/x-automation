@@ -7,6 +7,9 @@ import { candidateRoutes } from "./routes/candidates";
 import { funnelRoutes } from "./routes/funnel";
 import { providerRoutes } from "./routes/provider";
 import { draftRoutes } from "./routes/drafts";
+import { conversationRoutes } from "./routes/conversations";
+import { tokenRoutes } from "./routes/tokens";
+import { externalRoutes } from "./routes/external";
 import { PAGE } from "./dashboard";
 import { getUser } from "./auth";
 import { runScheduled } from "./scheduled";
@@ -30,6 +33,9 @@ app.route("/api/candidates", candidateRoutes);
 app.route("/api/funnel", funnelRoutes);
 app.route("/api/provider", providerRoutes);
 app.route("/api/drafts", draftRoutes);
+app.route("/api/conversations", conversationRoutes);
+app.route("/api/tokens", tokenRoutes);
+app.route("/api", externalRoutes);
 
 app.get("/", async (c) => {
   const user = await getUser(c);

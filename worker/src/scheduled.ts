@@ -5,6 +5,7 @@ import { safeParse } from "./lib/json";
 import { addIntervalInZone } from "./lib/time";
 import { executeReadyDrafts } from "./lib/execution";
 import { runTargeting, retryDraftContent } from "./lib/target";
+import { tickConversations, conversationSweeper } from "./lib/conversations";
 
 export const TICK_CRON = "* * * * *";
 export const MAINT_CRON = "0 * * * *";
@@ -37,6 +38,7 @@ function nextSlotMs(nextRunAtMs: number, intervalMinutes: number, timezone: stri
 
 // Shared due-job fan-out: update each job's next_run_at/last_run_at and batch
 // whatever commands the job's producer enqueues, in one D1 batch per table.
+// One-off schedules are deactivated after firing.
 async function fanOutDue<T extends DueJob>(
   env: Env,
   table: "schedules" | "automations",
@@ -48,14 +50,34 @@ async function fanOutDue<T extends DueJob>(
   const statements: D1PreparedStatement[] = [];
   for (const job of jobs) {
     const nextMs = nextSlotMs(job.next_run_at * 1000, job.interval_minutes, job.timezone, nowMs);
-    statements.push(
-      env.DB.prepare(`UPDATE ${table} SET next_run_at = ?, last_run_at = ? WHERE id = ?`).bind(
-        Math.floor(nextMs / 1000),
-        nowSec,
-        job.id,
-      ),
-      ...makeCommands(job, Math.floor(nextMs / 1000), nowSec),
-    );
+    // One-off schedules are deactivated after their single run.
+    if (table === "schedules") {
+      const row = (await env.DB.prepare("SELECT mode FROM schedules WHERE id = ?")
+        .bind(job.id)
+        .first()) as { mode?: string } | undefined;
+      if (row?.mode === "one_off") {
+        statements.push(
+          env.DB.prepare(`UPDATE ${table} SET status = 'done', last_run_at = ? WHERE id = ?`).bind(nowSec, job.id),
+        );
+      } else {
+        statements.push(
+          env.DB.prepare(`UPDATE ${table} SET next_run_at = ?, last_run_at = ? WHERE id = ?`).bind(
+            Math.floor(nextMs / 1000),
+            nowSec,
+            job.id,
+          ),
+        );
+      }
+    } else {
+      statements.push(
+        env.DB.prepare(`UPDATE ${table} SET next_run_at = ?, last_run_at = ? WHERE id = ?`).bind(
+          Math.floor(nextMs / 1000),
+          nowSec,
+          job.id,
+        ),
+      );
+    }
+    statements.push(...makeCommands(job, Math.floor(nextMs / 1000), nowSec));
   }
   if (statements.length > 0) await env.DB.batch(statements);
   return jobs.length;
@@ -119,7 +141,7 @@ export async function tickAutomations(env: Env): Promise<number> {
 
 // Hourly sweep: fail commands a relay claimed but never reported for hours.
 // Pending commands are preserved (offline queue-and-catch-up). Conversation
-// timeouts join here once the conversations table lands (ticket 11+).
+// inactivity timeouts and stuck-executing draft reconciliation join here.
 export async function maintenance(env: Env): Promise<number> {
   const now = nowSeconds();
   const staleCutoff = Math.floor((Date.now() - STALE_CLAIM_MS) / 1000);
@@ -128,7 +150,44 @@ export async function maintenance(env: Env): Promise<number> {
   )
     .bind(JSON.stringify({ error: "stale claim swept by maintenance" }), now, staleCutoff)
     .run();
+  await conversationSweeper(env);
+  await reconcileStuckDrafts(env, staleCutoff);
   return result.meta.changes;
+}
+
+// Ticket 15: reconcile drafts stuck in 'executing' whose command was claimed
+// but never reported. Mark them 'failed' and clear their dedupe rows so the
+// tweet can be engaged by other automations.
+async function reconcileStuckDrafts(env: Env, staleCutoff: number): Promise<number> {
+  const stuck = (await env.DB.prepare(
+    `SELECT d.id, d.user_id, d.relay_id, d.candidate_id
+     FROM drafts d
+     JOIN commands c ON c.id = d.command_id
+     WHERE d.status = 'executing' AND c.status = 'in_flight' AND c.claimed_at < ?`,
+  )
+    .bind(staleCutoff)
+    .all()) as unknown as { results: Array<{ id: number; user_id: string; relay_id: string; candidate_id: string | null }> };
+
+  if (stuck.results.length === 0) return 0;
+
+  const now = nowSeconds();
+  const statements: D1PreparedStatement[] = [];
+  for (const d of stuck.results) {
+    statements.push(
+      env.DB.prepare(
+        "UPDATE drafts SET status = 'failed', executed_at = ? WHERE id = ? AND user_id = ?",
+      ).bind(now, d.id, d.user_id),
+    );
+    if (d.candidate_id) {
+      statements.push(
+        env.DB.prepare(
+          "DELETE FROM dedup WHERE user_id = ? AND tweet_id = (SELECT tweet_id FROM candidates WHERE id = ?)",
+        ).bind(d.user_id, d.candidate_id),
+      );
+    }
+  }
+  await env.DB.batch(statements);
+  return stuck.results.length;
 }
 
 // Hourly AI targeting retry: re-run Funnel Stage 3 for every user with an
@@ -170,6 +229,7 @@ export async function runScheduled(controller: { cron: string | null }, env: Env
       await tick(env);
       await tickAutomations(env);
       await executeReadyDrafts(env);
+      await tickConversations(env);
       break;
     case MAINT_CRON:
       await maintenance(env);

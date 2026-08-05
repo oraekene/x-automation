@@ -4,10 +4,10 @@
 
 **Blocked by:** 11
 
-**Status:** ready-for-agent
+**Status: done**
 
-- [ ] Inbound replies to the user's tweets are detected and open a Conversation
-- [ ] Each turn produces a reply draft through the funnel with conversation context
-- [ ] Deterministic termination caps enforced and configurable
-- [ ] Semantic termination verdict (continue | close_with_message | close_silent) applied with reason
-- [ ] Dashboard shows conversations, turn counts, and the logged reason for every close
+- [x] Inbound replies to the user's tweets are detected and open a Conversation
+- [x] Each turn produces a reply draft through the funnel with conversation context
+- [x] Deterministic termination caps enforced and configurable
+- [x] Semantic termination verdict (continue | close_with_message | close_silent) applied with reason
+- [x] Dashboard shows conversations, turn counts, and the logged reason for every close

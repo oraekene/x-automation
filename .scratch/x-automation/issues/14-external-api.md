@@ -4,10 +4,10 @@
 
 **Blocked by:** 11
 
-**Status:** ready-for-agent
+**Status: done**
 
-- [ ] Per-user API tokens issued/revoked from the dashboard, stored hashed
-- [ ] POST /api/targeting submits a targeting profile and wires it into the funnel
-- [ ] POST /api/content supplies content that flows through drafts and execution
-- [ ] POST /api/results receives results from external tools into the audit trail
-- [ ] All three endpoints reject invalid/revoked tokens
+- [x] Per-user API tokens issued/revoked from the dashboard, stored hashed
+- [x] POST /api/targeting submits a targeting profile and wires it into the funnel
+- [x] POST /api/content supplies content that flows through drafts and execution
+- [x] POST /api/results receives results from external tools into the audit trail
+- [x] All three endpoints reject invalid/revoked tokens

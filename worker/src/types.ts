@@ -39,6 +39,7 @@ export type RelayRow = {
   token_hash: string | null;
   last_seen_at: number | null;
   enabled: number;
+  last_inbound_scan_at: number | null;
   created_at: number;
 };
 
@@ -116,9 +117,11 @@ export type DraftRow = {
   id: number;
   user_id: string;
   relay_id: string;
-  automation_id: string;
-  candidate_id: string;
-  action: "reply" | "quote";
+  automation_id: string | null;
+  candidate_id: string | null;
+  conversation_id: string | null;
+  target_tweet_id: string | null;
+  action: "reply" | "quote" | "post";
   reason: string;
   priority: number;
   provider: string;
@@ -130,6 +133,52 @@ export type DraftRow = {
   executed_at: number | null;
   decided_at: number | null;
   created_at: number;
+};
+
+export type ConversationRow = {
+  id: string;
+  user_id: string;
+  relay_id: string;
+  peer: string;
+  root_tweet_id: string;
+  status: string;
+  turn_count: number;
+  closed_reason: string | null;
+  closed_at: number | null;
+  last_turn_at: number;
+  created_at: number;
+};
+
+export type MessageRow = {
+  id: string;
+  conversation_id: string;
+  user_id: string;
+  role: "inbound" | "outbound";
+  tweet_id: string | null;
+  author: string;
+  text: string;
+  draft_id: string | null;
+  created_at: number;
+};
+
+export type ConversationSettingsRow = {
+  user_id: string;
+  max_turns: number;
+  inactivity_minutes: number;
+  daily_new_cap: number;
+  quiet_hours: string | null;
+  timezone: string;
+  updated_at: number;
+};
+
+export type ApiTokenRow = {
+  id: string;
+  user_id: string;
+  name: string;
+  token_hash: string;
+  prefix: string;
+  created_at: number;
+  revoked_at: number | null;
 };
 
 export type SearchCriteria = {

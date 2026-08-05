@@ -4,8 +4,8 @@
 
 **Blocked by:** 11
 
-**Status:** ready-for-agent
+**Status: done**
 
-- [ ] Compose a post with optional schedule (one-off or recurring, user timezone) in the dashboard
-- [ ] Scheduled posts ride the tick scheduler and execute through the relay write path
-- [ ] Posted/scheduled/cancelled states visible in the dashboard
+- [x] Compose a post with optional schedule (one-off or recurring, user timezone) in the dashboard
+- [x] Scheduled posts ride the tick scheduler and execute through the relay write path
+- [x] Posted/scheduled/cancelled states visible in the dashboard

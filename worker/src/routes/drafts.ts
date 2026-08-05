@@ -25,8 +25,8 @@ draftRoutes.get("/", async (c) => {
             d.status, d.text, d.command_id, d.result_tweet_id, d.executed_at, d.decided_at, d.created_at,
             c.author, c.text AS candidate_text, c.tweet_id, a.name AS automation_name
      FROM drafts d
-     JOIN candidates c ON c.id = d.candidate_id
-     JOIN automations a ON a.id = d.automation_id
+     LEFT JOIN candidates c ON c.id = d.candidate_id
+     LEFT JOIN automations a ON a.id = d.automation_id
      WHERE d.user_id = ?
      ORDER BY d.created_at DESC, d.id DESC
      LIMIT 200`,
@@ -35,8 +35,8 @@ draftRoutes.get("/", async (c) => {
     .all()) as unknown as {
     results: Array<{
       id: number;
-      automation_id: string;
-      candidate_id: string;
+      automation_id: string | null;
+      candidate_id: string | null;
       action: string;
       reason: string;
       priority: number;
@@ -49,10 +49,10 @@ draftRoutes.get("/", async (c) => {
       executed_at: number | null;
       decided_at: number | null;
       created_at: number;
-      author: string;
-      candidate_text: string;
-      tweet_id: string;
-      automation_name: string;
+      author: string | null;
+      candidate_text: string | null;
+      tweet_id: string | null;
+      automation_name: string | null;
     }>;
   };
 
@@ -103,6 +103,27 @@ draftRoutes.post("/:id/approve", async (c) => {
     .bind(draft.relay_id, user.id)
     .first()) as RelayRow | undefined;
   if (!relay) return c.json({ error: "relay not found" }, 404);
+
+  // Kill switch is the only hard safety check for plain posts.
+  if (draft.action === "post") {
+    if (relay.enabled === 0) return c.json({ error: "account is kill-switched off" }, 409);
+
+    const nowSec = nowSeconds();
+    const commandId = crypto.randomUUID();
+    const payload = JSON.stringify({ draft_id: String(draft.id), text });
+
+    await c.env.DB.batch([
+      // Enqueue the post command directly (no dedup — posts aren't tweets engaged).
+      (await import("../lib/command")).commandInsert(c.env.DB, commandId, draft.relay_id, "post", payload, nowSec),
+      c.env.DB.prepare(
+        "UPDATE drafts SET status = 'executing', command_id = ?, text = ?, decided_at = ? WHERE id = ? AND user_id = ? AND status IN ('ready', 'content_failed')",
+      ).bind(commandId, text, nowSec, draft.id, user.id),
+    ]);
+
+    return c.json({ draft_id: draft.id, status: "executing", command_id: commandId });
+  }
+
+  // Reply/quote: candidate lookup + dedup claim.
   const candidate = (await c.env.DB.prepare("SELECT tweet_id, author FROM candidates WHERE id = ? AND user_id = ?")
     .bind(draft.candidate_id, user.id)
     .first()) as { tweet_id: string; author: string } | undefined;
@@ -122,7 +143,7 @@ draftRoutes.post("/:id/approve", async (c) => {
     .run();
   if ((claim.meta?.changes ?? 0) === 0) return c.json({ error: "tweet already engaged elsewhere" }, 409);
 
-  await c.env.DB.batch(enqueueDraftStatements(c.env, draft, candidate, text, commandId, nowSec, true));
+  await c.env.DB.batch(enqueueDraftStatements(c.env, draft as { id: number; user_id: string; relay_id: string; action: "reply" | "quote" }, candidate, text, commandId, nowSec, true));
 
   return c.json({ draft_id: draft.id, status: "executing", command_id: commandId });
 });

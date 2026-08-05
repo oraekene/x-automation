@@ -4,7 +4,7 @@
 
 **Blocked by:** 02
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [x] Schedules table holds per-user jobs with next_run_at and status
 - [x] Per-minute tick cron picks up due jobs and fans them out (commands enqueued)
