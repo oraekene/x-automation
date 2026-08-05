@@ -16,18 +16,23 @@ import xclient
 import xreader
 
 
-def tweet(rest_id, author="alice", full_text=None):
+def tweet(rest_id, author="alice", full_text=None, in_reply_to_tweet_id=None, in_reply_to_screen_name=None):
+    legacy = {
+        "full_text": full_text or f"tweet {rest_id} text",
+        "created_at": "Sat Jul 25 12:00:00 +0000 2026",
+        "favorite_count": 10,
+        "retweet_count": 2,
+        "reply_count": 1,
+        "lang": "en",
+    }
+    if in_reply_to_tweet_id:
+        legacy["in_reply_to_status_id_str"] = in_reply_to_tweet_id
+    if in_reply_to_screen_name:
+        legacy["in_reply_to_screen_name"] = in_reply_to_screen_name
     return {
         "__typename": "Tweet",
         "rest_id": rest_id,
-        "legacy": {
-            "full_text": full_text or f"tweet {rest_id} text",
-            "created_at": "Sat Jul 25 12:00:00 +0000 2026",
-            "favorite_count": 10,
-            "retweet_count": 2,
-            "reply_count": 1,
-            "lang": "en",
-        },
+        "legacy": legacy,
         "core": {
             "user_results": {
                 "data": {"legacy": {"screen_name": author, "name": "Alice"}}
@@ -153,6 +158,37 @@ class TestDomainMapping:
         assert tweets[0].text == "tweet 1 text"
         assert tweets[0].reply_count == 1
         assert tweets[0].lang == "en"
+
+    def test_tweet_extracts_in_reply_to_fields(self):
+        reply_data = tweet(
+            "99",
+            author="bob",
+            full_text="replying to you",
+            in_reply_to_tweet_id="original-123",
+            in_reply_to_screen_name="alice",
+        )
+        entry = {"entryId": "tweet-99", "content": {"itemContent": {"tweet_results": {"result": reply_data}}}}
+        payload = timeline_payload([entry])
+        tweets = xreader.extract_tweets(payload)
+        assert len(tweets) == 1
+        assert tweets[0].in_reply_to_tweet_id == "original-123"
+        assert tweets[0].in_reply_to_screen_name == "alice"
+
+    def test_tweet_in_reply_fields_none_when_not_reply(self):
+        payload = timeline_payload([tweet_entry("1")])
+        tweets = xreader.extract_tweets(payload)
+        assert tweets[0].in_reply_to_tweet_id is None
+        assert tweets[0].in_reply_to_screen_name is None
+
+    def test_tweet_as_mapping_includes_reply_fields(self):
+        t = xreader.Tweet(
+            id="99", author="bob", text="reply", created_at="",
+            favorite_count=0, retweet_count=0, reply_count=0, lang="en",
+            in_reply_to_tweet_id="orig-1", in_reply_to_screen_name="alice",
+        )
+        m = t.as_mapping()
+        assert m["in_reply_to_tweet_id"] == "orig-1"
+        assert m["in_reply_to_screen_name"] == "alice"
 
 
 class TestPagination:
@@ -395,3 +431,39 @@ class TestProfileSearch:
         )
         assert len(transport.calls) == 1
         assert [p.screen_name for p in profiles] == ["a"]
+
+
+class TestInboundScan:
+    def test_inbound_scan_filters_to_reply_tweets(self):
+        reply_data = tweet(
+            "r1",
+            author="bob",
+            full_text="replying to you",
+            in_reply_to_tweet_id="user-tweet-1",
+            in_reply_to_screen_name="alice",
+        )
+        non_reply = tweet("r2", author="carol", full_text="just a tweet")
+        transport = FakeTransport(
+            timeline_payload([
+                {"entryId": "tweet-r1", "content": {"itemContent": {"tweet_results": {"result": reply_data}}}},
+                {"entryId": "tweet-r2", "content": {"itemContent": {"tweet_results": {"result": non_reply}}}},
+            ])
+        )
+        reader = xreader.XReader(transport, session_in(), screen_name="alice", resolver=make_resolver())
+        inbound = reader.inbound_scan(max_pages=1)
+        assert len(inbound) == 1
+        assert inbound[0].in_reply_to_tweet_id == "user-tweet-1"
+
+    def test_inbound_scan_uses_to_screen_name_search(self):
+        transport = FakeTransport(timeline_payload([]))
+        reader = xreader.XReader(transport, session_in(), screen_name="alice", resolver=make_resolver())
+        reader.inbound_scan(max_pages=1)
+        _, query = transport.calls[0]
+        assert query["variables"]["rawQuery"] == "to:alice"
+
+    def test_inbound_scan_requires_screen_name(self):
+        session = xclient.XSession.from_mapping({"auth_token": "at", "ct0": "ct"})
+        reader = xreader.XReader(FakeTransport({}), session, resolver=make_resolver())
+        reader._screen_name = None
+        with pytest.raises(ValueError, match="screen_name"):
+            reader.inbound_scan()

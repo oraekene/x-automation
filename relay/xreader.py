@@ -152,6 +152,8 @@ class Tweet:
     retweet_count: int
     reply_count: int
     lang: str
+    in_reply_to_tweet_id: str | None = None
+    in_reply_to_screen_name: str | None = None
 
     def as_mapping(self) -> dict:
         return {
@@ -163,6 +165,8 @@ class Tweet:
             "retweet_count": self.retweet_count,
             "reply_count": self.reply_count,
             "lang": self.lang,
+            "in_reply_to_tweet_id": self.in_reply_to_tweet_id,
+            "in_reply_to_screen_name": self.in_reply_to_screen_name,
         }
 
 
@@ -256,6 +260,8 @@ def _tweet_body(result: dict) -> Tweet:
         retweet_count=int(legacy.get("retweet_count", 0)),
         reply_count=int(legacy.get("reply_count", 0)),
         lang=legacy.get("lang", ""),
+        in_reply_to_tweet_id=legacy.get("in_reply_to_status_id_str") or None,
+        in_reply_to_screen_name=legacy.get("in_reply_to_screen_name") or None,
     )
 
 
@@ -452,7 +458,8 @@ def user_posts(
 
 class XReader:
     """The production read seam the command channel calls: wraps a transport so
-    ``search``/``user_posts``/``profile`` share one resolution + session."""
+    ``search``/``user_posts``/``profile``/``inbound_scan`` share one resolution
+    + session."""
 
     def __init__(
         self,
@@ -461,11 +468,13 @@ class XReader:
         *,
         host: str = "https://x.com",
         resolver: QueryIdResolver | None = None,
+        screen_name: str | None = None,
     ):
         self._transport = transport
         self._session = session
         self.host = host
         self._resolver = resolver or QueryIdResolver()
+        self._screen_name = screen_name or session.screen_name
 
     @classmethod
     def from_client(
@@ -473,8 +482,9 @@ class XReader:
         session: xclient.XSession,
         *,
         host: str = "https://x.com",
+        screen_name: str | None = None,
     ) -> "XReader":
-        return cls(xclient.XClient().execute, session, host=host)
+        return cls(xclient.XClient().execute, session, host=host, screen_name=screen_name)
 
     def search(self, criteria: SearchCriteria, *, max_pages: int = 10) -> list[Tweet]:
         return search_tweets(
@@ -521,3 +531,20 @@ class XReader:
             max_pages=max_pages,
             max_profiles=max_profiles,
         )
+
+    def inbound_scan(self, *, max_pages: int = 1) -> list[Tweet]:
+        """Find recent replies/mentions directed at the user. Searches for
+        ``to:<screen_name>`` and returns tweets that have ``in_reply_to_tweet_id``
+        set, so the Worker can trace them into conversations."""
+        if not self._screen_name:
+            raise ValueError("screen_name is required for inbound_scan")
+        criteria = SearchCriteria(keywords=[f"to:{self._screen_name}"])
+        tweets = search_tweets(
+            self._transport,
+            self._session,
+            criteria=criteria,
+            resolver=self._resolver,
+            host=self.host,
+            max_pages=max_pages,
+        )
+        return [t for t in tweets if t.in_reply_to_tweet_id is not None]

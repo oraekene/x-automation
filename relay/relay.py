@@ -151,7 +151,7 @@ def execute_command(command: dict, *, reader=None, writer=None) -> dict:
     if command_type == "echo":
         message = command.get("payload", {}).get("message", "")
         return {"ok": True, "output": {"echoed": message}}
-    if command_type in ("search", "user_posts", "profile", "profile_pass"):
+    if command_type in ("search", "user_posts", "profile", "profile_pass", "inbound_scan"):
         if reader is None:
             return {"ok": False, "output": {"error": "X reader not configured"}}
         return _run_x_command(
@@ -186,6 +186,9 @@ def _run_read_command(reader, command_type: str, payload: dict) -> dict:
         return {"tweets": [t.as_mapping() for t in tweets]}
     if command_type == "profile_pass":
         return _run_profile_pass(reader, payload)
+    if command_type == "inbound_scan":
+        tweets = reader.inbound_scan(max_pages=payload.get("max_pages", 1))
+        return {"tweets": [t.as_mapping() for t in tweets]}
     screen_name = payload.get("screen_name")
     if not screen_name:
         raise ValueError("a screen_name is required")

@@ -115,12 +115,13 @@ def test_execute_echo_command():
 class FakeReader:
     """Fake read seam; returns canned domain values and records calls."""
 
-    def __init__(self, tweets=None, profile=None, profiles=None):
+    def __init__(self, tweets=None, profile=None, profiles=None, inbound=None):
         self.tweets = tweets or []
         self.fake_profile = profile or xreader.UserProfile(
             rest_id="1", screen_name="bob", name="B", bio="", followers_count=0, following_count=0, verified=False, location=None
         )
         self.profiles = profiles or []
+        self.inbound = inbound or []
         self.calls = []
 
     def search(self, criteria):
@@ -139,9 +140,17 @@ class FakeReader:
         self.calls.append(("search_profiles", criteria, max_profiles))
         return self.profiles[:max_profiles]
 
+    def inbound_scan(self, *, max_pages=1):
+        self.calls.append(("inbound_scan", max_pages))
+        return self.inbound
 
-def make_tweet(id="1", author="bob"):
-    return xreader.Tweet(id=id, author=author, text="hello", created_at="", favorite_count=1, retweet_count=0, reply_count=0, lang="en")
+
+def make_tweet(id="1", author="bob", in_reply_to_tweet_id=None):
+    return xreader.Tweet(
+        id=id, author=author, text="hello", created_at="",
+        favorite_count=1, retweet_count=0, reply_count=0, lang="en",
+        in_reply_to_tweet_id=in_reply_to_tweet_id,
+    )
 
 
 class FakeWriter:
@@ -276,6 +285,29 @@ def test_profile_pass_without_reader_fails_cleanly():
     result = relay_mod.execute_command(
         {"type": "profile_pass", "payload": {"profile": {"keywords": ["x"]}}}
     )
+    assert result["ok"] is False
+    assert "reader" in result["output"]["error"]
+
+
+def test_inbound_scan_command_reports_reply_tweets():
+    inbound_tweets = [
+        make_tweet("r1", author="bob", in_reply_to_tweet_id="user-tweet-1"),
+        make_tweet("r2", author="carol", in_reply_to_tweet_id="user-tweet-2"),
+    ]
+    reader = FakeReader(inbound=inbound_tweets)
+    result = relay_mod.execute_command(
+        {"type": "inbound_scan", "payload": {"max_pages": 1}},
+        reader=reader,
+    )
+    assert result["ok"] is True
+    assert len(result["output"]["tweets"]) == 2
+    assert result["output"]["tweets"][0]["in_reply_to_tweet_id"] == "user-tweet-1"
+    assert result["output"]["tweets"][1]["in_reply_to_tweet_id"] == "user-tweet-2"
+    assert reader.calls == [("inbound_scan", 1)]
+
+
+def test_inbound_scan_command_without_reader_fails_cleanly():
+    result = relay_mod.execute_command({"type": "inbound_scan", "payload": {}})
     assert result["ok"] is False
     assert "reader" in result["output"]["error"]
 
