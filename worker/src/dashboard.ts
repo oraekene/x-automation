@@ -101,6 +101,50 @@ const PAGE = `<!doctype html>
   <tbody id="draftRows"></tbody>
 </table>
 
+<h2>Conversations</h2>
+<p class="muted">Inbound multi-turn threads. Conversations start when someone replies to your tweet; the AI generates turns and you approve replies from the inbox above.</p>
+<table>
+  <thead><tr><th>Peer</th><th>Status</th><th>Turns</th><th>Root tweet</th><th>Closed</th><th>Last active</th><th></th></tr></thead>
+  <tbody id="convRows"></tbody>
+</table>
+<div id="convDetail" hidden>
+  <h3>Conversation thread</h3>
+  <div id="convMessages"></div>
+</div>
+<h3>Conversation settings</h3>
+<form id="convSettingsForm">
+  <label>Max turns <input id="cMaxTurns" type="number" min="1" max="8" value="5"></label>
+  <label>Daily new cap <input id="cDailyCap" type="number" min="1" max="50" value="10"></label>
+  <label>Lifetime cap <input id="cLifetimeCap" type="number" min="1" max="1000" value="100"></label>
+  <label>Inactivity (min) <input id="cInactivity" type="number" min="1" max="10080" value="1440"></label>
+  <label>Timezone <input id="cTimezone" placeholder="UTC" value="UTC"></label>
+  <label>Quiet start <input id="cQuietStart" placeholder="22:00"></label>
+  <label>Quiet end <input id="cQuietEnd" placeholder="07:00"></label>
+  <button type="submit">Save settings</button>
+</form>
+
+<h2>Post compose</h2>
+<p class="muted">Create a post directly (no candidate required). The draft is enqueued for the relay to post.</p>
+<form id="postForm">
+  <label>Relay <select id="pRelay" required></select></label>
+  <label>Text <textarea id="pText" rows="3" cols="60" maxlength="280" placeholder="What's happening?" required></textarea></label>
+  <span id="pCharCount" class="muted">0/280</span>
+  <button type="submit">Create post draft</button>
+</form>
+<pre id="postResult" hidden></pre>
+
+<h2>API tokens</h2>
+<p class="muted">Manage API tokens for external tools (Hermes Agent, etc.). Tokens are shown once at creation and hashed in the database.</p>
+<form id="tokenCreateForm">
+  <label>Name <input id="tName" placeholder="my-plugin" required></label>
+  <button type="submit">Create token</button>
+</form>
+<pre id="tokenResult" hidden></pre>
+<table>
+  <thead><tr><th>Name</th><th>Prefix</th><th>Created</th><th></th></tr></thead>
+  <tbody id="tokenRows"></tbody>
+</table>
+
 <script>
   const rows = document.getElementById("rows");
   const pairBox = document.getElementById("pair");
@@ -108,11 +152,20 @@ const PAGE = `<!doctype html>
   const candRows = document.getElementById("candRows");
   const decisionRows = document.getElementById("decisionRows");
   const draftRows = document.getElementById("draftRows");
+  const convRows = document.getElementById("convRows");
+  const convDetail = document.getElementById("convDetail");
+  const convMessages = document.getElementById("convMessages");
+  const tokenRows = document.getElementById("tokenRows");
+  const tokenResult = document.getElementById("tokenResult");
+  const postResult = document.getElementById("postResult");
   const relaySelect = document.getElementById("aRelay");
+  const pRelaySelect = document.getElementById("pRelay");
   const presetSelect = document.getElementById("pPreset");
   const pBaseUrl = document.getElementById("pBaseUrl");
   const pModel = document.getElementById("pModel");
   const pApiKey = document.getElementById("pApiKey");
+  const pText = document.getElementById("pText");
+  const pCharCount = document.getElementById("pCharCount");
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[m]));
   async function sendEcho(id) {
     await fetch("/api/relays/" + id + "/commands", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ type: "echo", payload: { message: "ping" } }) });
@@ -127,6 +180,7 @@ const PAGE = `<!doctype html>
     const data = await res.json();
     rows.innerHTML = "";
     relaySelect.innerHTML = "";
+    pRelaySelect.innerHTML = "";
     for (const r of data.relays) {
       const tr = document.createElement("tr");
       tr.innerHTML = \`<td>\${esc(r.name)}</td><td>\${r.status}</td>
@@ -145,6 +199,10 @@ const PAGE = `<!doctype html>
       opt.value = r.id;
       opt.textContent = r.name;
       relaySelect.appendChild(opt);
+      const opt2 = document.createElement("option");
+      opt2.value = r.id;
+      opt2.textContent = r.name;
+      pRelaySelect.appendChild(opt2);
     }
   }
   async function refreshAutomations() {
@@ -239,6 +297,65 @@ const PAGE = `<!doctype html>
       draftRows.appendChild(tr);
     }
   }
+  async function refreshConversations() {
+    const res = await fetch("/api/conversations", { headers: { "accept": "application/json" } });
+    const data = await res.json();
+    convRows.innerHTML = "";
+    for (const c of data.conversations) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = \`<td>@\${esc(c.peer)}</td><td>\${esc(c.status)}</td>
+        <td>\${c.turn_count}</td><td>\${esc(c.root_tweet_id)}</td>
+        <td>\${c.closed_reason ? esc(c.closed_reason) : "-"}</td>
+        <td>\${new Date(c.last_turn_at * 1000).toISOString()}</td>
+        <td><button class="viewConv" data-id="\${c.id}">View</button></td>\`;
+      tr.querySelector("button.viewConv").addEventListener("click", () => viewConversation(c.id));
+      convRows.appendChild(tr);
+    }
+  }
+  async function viewConversation(id) {
+    const res = await fetch("/api/conversations/" + id, { headers: { "accept": "application/json" } });
+    const data = await res.json();
+    convDetail.hidden = false;
+    convMessages.innerHTML = "";
+    for (const m of data.messages) {
+      const div = document.createElement("div");
+      div.style.cssText = "margin:.25rem 0;padding:.25rem;border-left:3px solid " + (m.role === "inbound" ? "#0a7d2a" : "#0057b7") + ";";
+      div.innerHTML = \`<strong>\${m.role === "inbound" ? "@" + esc(m.author) : "Bot"}</strong> <span class="muted">\${new Date(m.created_at * 1000).toLocaleTimeString()}</span><br>\${esc(m.text)}\`;
+      convMessages.appendChild(div);
+    }
+  }
+  async function refreshConvSettings() {
+    const res = await fetch("/api/conversations/settings/meta", { headers: { "accept": "application/json" } });
+    const data = await res.json();
+    const s = data.settings;
+    document.getElementById("cMaxTurns").value = s.max_turns;
+    document.getElementById("cDailyCap").value = s.daily_new_cap;
+    document.getElementById("cLifetimeCap").value = s.max_lifetime_conversations;
+    document.getElementById("cInactivity").value = s.inactivity_minutes;
+    document.getElementById("cTimezone").value = s.timezone || "UTC";
+    if (s.quiet_hours) {
+      document.getElementById("cQuietStart").value = s.quiet_hours.start;
+      document.getElementById("cQuietEnd").value = s.quiet_hours.end;
+    }
+  }
+  async function refreshTokens() {
+    const res = await fetch("/api/tokens", { headers: { "accept": "application/json" } });
+    const data = await res.json();
+    tokenRows.innerHTML = "";
+    for (const t of data.tokens) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = \`<td>\${esc(t.name)}</td>
+        <td>\${esc(t.prefix)}…</td>
+        <td>\${new Date(t.created_at * 1000).toISOString()}</td>
+        <td>\${t.revoked ? '<span class="muted">revoked</span>' : \`<button class="revokeToken" data-id="\${t.id}">Revoke</button>\`}</td>\`;
+      tr.querySelector("button.revokeToken")?.addEventListener("click", async () => {
+        if (!confirm("Revoke this token?")) return;
+        await fetch("/api/tokens/" + t.id, { method: "DELETE" });
+        refreshTokens();
+      });
+      tokenRows.appendChild(tr);
+    }
+  }
   async function runTargeting() {
     const res = await fetch("/api/funnel/target", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
     const data = await res.json();
@@ -320,6 +437,43 @@ const PAGE = `<!doctype html>
     pApiKey.value = "";
     refreshProvider();
   });
+  document.getElementById("convSettingsForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const body = {
+      max_turns: parseInt(document.getElementById("cMaxTurns").value, 10) || 5,
+      daily_new_cap: parseInt(document.getElementById("cDailyCap").value, 10) || 10,
+      max_lifetime_conversations: parseInt(document.getElementById("cLifetimeCap").value, 10) || 100,
+      inactivity_minutes: parseInt(document.getElementById("cInactivity").value, 10) || 1440,
+      timezone: document.getElementById("cTimezone").value || "UTC",
+    };
+    const qs = document.getElementById("cQuietStart").value;
+    const qe = document.getElementById("cQuietEnd").value;
+    if (qs && qe) body.quiet_hours = { start: qs, end: qe };
+    await fetch("/api/conversations/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    refreshConvSettings();
+  });
+  document.getElementById("postForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const res = await fetch("/api/content", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ relay_id: pRelaySelect.value, text: pText.value.trim() }) });
+    const data = await res.json();
+    if (!res.ok) { postResult.hidden = false; postResult.textContent = "Error: " + (data.error || "failed"); return; }
+    postResult.hidden = false;
+    postResult.textContent = "Draft #" + data.draft_id + " created (action: " + data.action + "). Approve from the inbox above.";
+    pText.value = "";
+    pCharCount.textContent = "0/280";
+    refreshDrafts();
+  });
+  pText.addEventListener("input", () => { pCharCount.textContent = pText.value.length + "/280"; });
+  document.getElementById("tokenCreateForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const res = await fetch("/api/tokens", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: document.getElementById("tName").value }) });
+    const data = await res.json();
+    if (!res.ok) { tokenResult.hidden = false; tokenResult.textContent = "Error: " + (data.error || "failed"); return; }
+    tokenResult.hidden = false;
+    tokenResult.textContent = "Token created! Save this — it won't be shown again:\\n\\n" + data.token + "\\n\\nToken ID: " + data.token_id;
+    document.getElementById("tName").value = "";
+    refreshTokens();
+  });
   refresh();
   refreshAutomations();
   refreshCandidates();
@@ -327,7 +481,10 @@ const PAGE = `<!doctype html>
   refreshPresets();
   refreshProvider();
   refreshDrafts();
-  setInterval(() => { refresh(); refreshAutomations(); refreshCandidates(); refreshDecisions(); refreshDrafts(); }, 15000);
+  refreshConversations();
+  refreshConvSettings();
+  refreshTokens();
+  setInterval(() => { refresh(); refreshAutomations(); refreshCandidates(); refreshDecisions(); refreshDrafts(); refreshConversations(); }, 15000);
 </script>
 </body>
 </html>`;
