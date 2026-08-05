@@ -11,6 +11,7 @@ export const CONVERSATION_DEFAULTS = {
   max_turns_cap: 8,
   inactivity_minutes: 1440,
   daily_new_cap: 10,
+  max_lifetime_conversations: 100,
   timezone: "UTC",
 } as const;
 
@@ -25,6 +26,7 @@ type ResolvedSettings = {
   max_turns: number;
   inactivity_minutes: number;
   daily_new_cap: number;
+  max_lifetime_conversations: number;
   quiet_hours: { start: string; end: string } | null;
   timezone: string;
 };
@@ -34,6 +36,7 @@ function resolveSettings(row: ConversationSettingsRow | undefined): ResolvedSett
     max_turns: Math.min(CONVERSATION_DEFAULTS.max_turns_cap, row?.max_turns ?? CONVERSATION_DEFAULTS.max_turns),
     inactivity_minutes: row?.inactivity_minutes ?? CONVERSATION_DEFAULTS.inactivity_minutes,
     daily_new_cap: row?.daily_new_cap ?? CONVERSATION_DEFAULTS.daily_new_cap,
+    max_lifetime_conversations: row?.max_lifetime_conversations ?? CONVERSATION_DEFAULTS.max_lifetime_conversations,
     quiet_hours: row?.quiet_hours ? JSON.parse(row.quiet_hours) : null,
     timezone: row?.timezone ?? CONVERSATION_DEFAULTS.timezone,
   };
@@ -52,13 +55,11 @@ function isInQuietHours(nowSec: number, quietHours: { start: string; end: string
     : minuteOfDay >= start || minuteOfDay < end;
 }
 
-async function findOrCreateConversation(
+async function findConversation(
   db: D1Database,
   userId: string,
-  relayId: string,
   tweet: InboundTweet,
-  nowSec: number,
-): Promise<{ conv: ConversationRow; isNew: boolean } | null> {
+): Promise<{ conv: ConversationRow; isNew: false } | null> {
   if (!tweet.in_reply_to_tweet_id) return null;
 
   const parentMsg = (await db.prepare(
@@ -67,37 +68,39 @@ async function findOrCreateConversation(
     .bind(userId, tweet.in_reply_to_tweet_id)
     .first()) as { conversation_id: string } | undefined;
 
-  if (parentMsg) {
-    const conv = (await db.prepare("SELECT * FROM conversations WHERE id = ?")
-      .bind(parentMsg.conversation_id)
-      .first()) as ConversationRow;
-    return conv.status === "open" ? { conv, isNew: false } : null;
-  }
+  if (!parentMsg) return null;
 
+  const conv = (await db.prepare("SELECT * FROM conversations WHERE id = ?")
+    .bind(parentMsg.conversation_id)
+    .first()) as ConversationRow;
+  return conv.status === "open" ? { conv, isNew: false } : null;
+}
+
+async function createConversation(
+  db: D1Database,
+  userId: string,
+  relayId: string,
+  tweet: InboundTweet,
+  nowSec: number,
+): Promise<ConversationRow> {
   const convId = crypto.randomUUID();
   await db.prepare(
     "INSERT INTO conversations (id, user_id, relay_id, peer, root_tweet_id, last_turn_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
   )
     .bind(convId, userId, relayId, tweet.author, tweet.in_reply_to_tweet_id, nowSec, nowSec)
     .run();
-  const conv = (await db.prepare("SELECT * FROM conversations WHERE id = ?")
+  return (await db.prepare("SELECT * FROM conversations WHERE id = ?")
     .bind(convId)
     .first()) as ConversationRow;
-  return { conv, isNew: true };
 }
 
-async function checkDeterministicCaps(
+async function checkNewConversationCaps(
   env: Env,
   userId: string,
-  conv: ConversationRow,
-  isNew: boolean,
   settings: ResolvedSettings,
   nowSec: number,
   newConversationsThisBatch: number,
 ): Promise<boolean> {
-  const turnCount = isNew ? conv.turn_count : conv.turn_count + 1;
-  if (turnCount >= settings.max_turns) return false;
-
   const todayStart = Math.floor(new Date(nowSec * 1000).setUTCHours(0, 0, 0, 0) / 1000);
   const dailyCount = (await env.DB.prepare(
     "SELECT COUNT(*) as cnt FROM conversations WHERE user_id = ? AND created_at >= ?",
@@ -106,9 +109,21 @@ async function checkDeterministicCaps(
     .first()) as { cnt: number };
   if (dailyCount.cnt >= settings.daily_new_cap && newConversationsThisBatch === 0) return false;
 
+  const lifetimeCount = (await env.DB.prepare(
+    "SELECT COUNT(*) as cnt FROM conversations WHERE user_id = ?",
+  )
+    .bind(userId)
+    .first()) as { cnt: number };
+  if (lifetimeCount.cnt >= settings.max_lifetime_conversations) return false;
+
   if (settings.quiet_hours && isInQuietHours(nowSec, settings.quiet_hours, settings.timezone)) return false;
 
   return true;
+}
+
+function checkTurnCap(conv: ConversationRow, isNew: boolean, settings: ResolvedSettings): boolean {
+  const turnCount = isNew ? conv.turn_count : conv.turn_count + 1;
+  return turnCount < settings.max_turns;
 }
 
 // Enqueue an inbound_scan command for each relay that has open conversations.
@@ -160,12 +175,22 @@ export async function processInboundTweets(
       .first();
     if (existing) { skipped++; continue; }
 
-    const result = await findOrCreateConversation(env.DB, userId, relayId, tweet, nowSec);
-    if (!result) { skipped++; continue; }
-    const { conv, isNew } = result;
-    if (isNew) conversations++;
+    const found = await findConversation(env.DB, userId, tweet);
+    let conv: ConversationRow;
+    let isNew: boolean;
 
-    if (!(await checkDeterministicCaps(env, userId, conv, isNew, settings, nowSec, conversations))) continue;
+    if (found) {
+      conv = found.conv;
+      isNew = false;
+    } else {
+      if (!tweet.in_reply_to_tweet_id) { skipped++; continue; }
+      if (!(await checkNewConversationCaps(env, userId, settings, nowSec, conversations))) continue;
+      conv = await createConversation(env.DB, userId, relayId, tweet, nowSec);
+      isNew = true;
+      conversations++;
+    }
+
+    if (!(await checkTurnCap(conv, isNew, settings))) continue;
 
     const turnCount = isNew ? conv.turn_count : conv.turn_count + 1;
 

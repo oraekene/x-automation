@@ -436,6 +436,73 @@ describe("conversations API", () => {
   });
 });
 
+describe("lifetime conversation budget", () => {
+  it("blocks new conversations after reaching max_lifetime_conversations", async () => {
+    const mf = await makeWorker();
+    try {
+      const { relay_id, token } = await setup(mf);
+
+      // Set lifetime cap to 2
+      await mf.dispatchFetch("http://localhost/api/conversations/settings", {
+        method: "PUT",
+        headers: userHeaders(),
+        body: JSON.stringify({ max_lifetime_conversations: 2 }),
+      });
+
+      // Conversation 1
+      await scanInbound(mf, relay_id, token, [{
+        id: "t-life1",
+        author: "bob",
+        text: "First lifetime",
+        in_reply_to_tweet_id: "user-lt-1",
+      }]);
+
+      // Conversation 2
+      await scanInbound(mf, relay_id, token, [{
+        id: "t-life2",
+        author: "bob",
+        text: "Second lifetime",
+        in_reply_to_tweet_id: "user-lt-2",
+      }]);
+
+      const { conversations: after2 } = await listConversations(mf);
+      expect(after2).toHaveLength(2);
+
+      // Conversation 3 — should be blocked by lifetime cap
+      await scanInbound(mf, relay_id, token, [{
+        id: "t-life3",
+        author: "bob",
+        text: "Third lifetime - blocked",
+        in_reply_to_tweet_id: "user-lt-3",
+      }]);
+
+      const { conversations: after3 } = await listConversations(mf);
+      expect(after3).toHaveLength(2);
+    } finally {
+      await mf.dispose();
+    }
+  });
+
+  it("returns max_lifetime_conversations in settings meta", async () => {
+    const mf = await makeWorker();
+    try {
+      await setup(mf);
+
+      await mf.dispatchFetch("http://localhost/api/conversations/settings", {
+        method: "PUT",
+        headers: userHeaders(),
+        body: JSON.stringify({ max_lifetime_conversations: 50 }),
+      });
+
+      const res = await mf.dispatchFetch("http://localhost/api/conversations/settings/meta", { headers: userHeaders() });
+      const body = (await res.json()) as { settings: { max_lifetime_conversations: number } };
+      expect(body.settings.max_lifetime_conversations).toBe(50);
+    } finally {
+      await mf.dispose();
+    }
+  });
+});
+
 describe("tickConversations", () => {
   it("enqueues inbound_scan for relays with open conversations", async () => {
     const mf = await makeWorker();

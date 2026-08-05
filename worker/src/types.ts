@@ -167,6 +167,7 @@ export type ConversationSettingsRow = {
   max_turns: number;
   inactivity_minutes: number;
   daily_new_cap: number;
+  max_lifetime_conversations: number;
   quiet_hours: string | null;
   timezone: string;
   updated_at: number;

@@ -12,6 +12,7 @@ export const conversationRoutes = new Hono<{ Bindings: Env }>();
 const MAX_TURNS_CAP = 8;
 const MAX_INACTIVITY = 10080; // 7 days
 const MAX_DAILY_NEW_CAP = 50;
+const MAX_LIFETIME_CONVERSATIONS = 1000;
 
 conversationRoutes.get("/", async (c) => {
   const user = await getUser(c);
@@ -94,6 +95,7 @@ conversationRoutes.get("/settings/meta", async (c) => {
       max_turns: row?.max_turns ?? 5,
       inactivity_minutes: row?.inactivity_minutes ?? 1440,
       daily_new_cap: row?.daily_new_cap ?? 10,
+      max_lifetime_conversations: row?.max_lifetime_conversations ?? 100,
       quiet_hours: row?.quiet_hours ? JSON.parse(row.quiet_hours) : null,
       timezone: row?.timezone ?? "UTC",
     },
@@ -107,6 +109,7 @@ conversationRoutes.put("/settings", async (c) => {
     max_turns?: number;
     inactivity_minutes?: number;
     daily_new_cap?: number;
+    max_lifetime_conversations?: number;
     quiet_hours?: { start: string; end: string } | null;
     timezone?: string;
   };
@@ -119,6 +122,9 @@ conversationRoutes.put("/settings", async (c) => {
     : undefined;
   const dailyNewCap = typeof body.daily_new_cap === "number"
     ? Math.min(MAX_DAILY_NEW_CAP, Math.max(1, Math.round(body.daily_new_cap)))
+    : undefined;
+  const maxLifetimeConversations = typeof body.max_lifetime_conversations === "number"
+    ? Math.min(MAX_LIFETIME_CONVERSATIONS, Math.max(1, Math.round(body.max_lifetime_conversations)))
     : undefined;
   const timezone = typeof body.timezone === "string" && isValidTimeZone(body.timezone)
     ? body.timezone
@@ -138,14 +144,15 @@ conversationRoutes.put("/settings", async (c) => {
   const nowSec = nowSeconds();
   if (!existing) {
     await c.env.DB.prepare(
-      `INSERT INTO conversation_settings (user_id, max_turns, inactivity_minutes, daily_new_cap, quiet_hours, timezone, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO conversation_settings (user_id, max_turns, inactivity_minutes, daily_new_cap, max_lifetime_conversations, quiet_hours, timezone, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
       .bind(
         user.id,
         maxTurns ?? 5,
         inactivityMinutes ?? 1440,
         dailyNewCap ?? 10,
+        maxLifetimeConversations ?? 100,
         quietHours ?? null,
         timezone ?? "UTC",
         nowSec,
@@ -154,13 +161,14 @@ conversationRoutes.put("/settings", async (c) => {
   } else {
     await c.env.DB.prepare(
       `UPDATE conversation_settings
-       SET max_turns = ?, inactivity_minutes = ?, daily_new_cap = ?, quiet_hours = ?, timezone = ?, updated_at = ?
+       SET max_turns = ?, inactivity_minutes = ?, daily_new_cap = ?, max_lifetime_conversations = ?, quiet_hours = ?, timezone = ?, updated_at = ?
        WHERE user_id = ?`,
     )
       .bind(
         maxTurns ?? existing.max_turns,
         inactivityMinutes ?? existing.inactivity_minutes,
         dailyNewCap ?? existing.daily_new_cap,
+        maxLifetimeConversations ?? existing.max_lifetime_conversations,
         quietHours !== undefined ? quietHours : existing.quiet_hours,
         timezone ?? existing.timezone,
         nowSec,
