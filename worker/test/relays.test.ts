@@ -277,11 +277,12 @@ describe("per-user scoping", () => {
     }
   });
 
-  it("gates the HTML page behind authentication", async () => {
+  it("serves the dashboard shell to everyone; auth happens client-side per API call", async () => {
     const mf = await makeWorker();
     try {
       const signedOut = await mf.dispatchFetch("http://localhost/");
-      expect(signedOut.status).toBe(401);
+      expect(signedOut.status).toBe(200);
+      expect(await signedOut.text()).toContain("X Automation");
 
       const signedIn = await mf.dispatchFetch("http://localhost/", {
         headers: userHeaders(undefined, false),

@@ -13,14 +13,17 @@ const ACCESS_CERTS = (team: string) => `https://${team}.cloudflareaccess.com/cdn
 // asserts `Cf-Access-Jwt-Assertion` against the team's published JWKS. Swap in
 // a magic-link provider by returning a User backed by D1 lookups instead.
 export async function getUser(c: Context<{ Bindings: Env }>): Promise<User | null> {
-  const header = c.req.header("Cf-Access-Jwt-Assertion");
-  if (!header) return null;
+  const accessJwt = c.req.header("Cf-Access-Jwt-Assertion");
+  const authHeader = c.req.header("Authorization");
+  const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  const token = accessJwt || bearerToken;
+  if (!token) return null;
   const { ACCESS_TEAM, ACCESS_AUD } = c.env;
   if (ACCESS_TEAM && ACCESS_AUD) {
-    return await verifyAccessIdentity(ACCESS_TEAM, ACCESS_AUD, header);
+    return await verifyAccessIdentity(ACCESS_TEAM, ACCESS_AUD, token);
   }
   // Dev/test-only path, never reached when a team+audience are configured.
-  if (c.env.AUTH_DEV === "1") return decodeUnverified(header);
+  if (c.env.AUTH_DEV === "1") return decodeUnverified(token);
   // Fail closed: a misconfigured deployment must reject, not trust.
   return null;
 }

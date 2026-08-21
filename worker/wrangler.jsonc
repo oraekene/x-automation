@@ -12,25 +12,22 @@
   // secrets/plaintext vars so getUser() verifies Cloudflare Access JWTs.
   // Never set AUTH_DEV in production (it trusts unsigned tokens).
   "name": "x-automation-worker",
+  "account_id": "baadb8542499ad04ed9e0432215f3fb6",
   "compatibility_date": "2025-07-18",
   "compatibility_flags": ["nodejs_compat"],
   "main": "src/index.ts",
   "triggers": {
-    "crons": [
-      { "cron": "* * * * *", "name": "tick" },
-      { "cron": "0 * * * *", "name": "maintenance" }
-    ]
+    "crons": ["* * * * *", "0 * * * *"]
   },
   "vars": {
     "ACCESS_TEAM": "",
-    "ACCESS_AUD": "",
-    "AUTH_DEV": ""
+    "ACCESS_AUD": ""
   },
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "x-automation",
-      "database_id": "local-dev-placeholder",
+      "database_id": "5021159f-9bbb-4347-943d-75fa4b4a0f50",
       "migrations_dir": "migrations"
     }
   ]

@@ -37,11 +37,7 @@ app.route("/api/conversations", conversationRoutes);
 app.route("/api/tokens", tokenRoutes);
 app.route("/api", externalRoutes);
 
-app.get("/", async (c) => {
-  const user = await getUser(c);
-  if (!user) return c.json({ error: "unauthorized" }, 401);
-  return c.html(PAGE);
-});
+app.get("/", (c) => c.html(PAGE));
 
 export default {
   fetch: app.fetch,

@@ -78,10 +78,10 @@ export async function makeWorker(opts?: { authDev?: boolean }): Promise<Miniflar
     bindings,
   });
   const db = await mf.getD1Database("DB");
+  // One round-trip per migration: per-statement run() costs ~200ms+ each over
+  // the Miniflare proxy on some Windows setups, which alone blew the 20s budget.
   for (const migration of migrations()) {
-    for (const statement of migration.statements) {
-      await db.prepare(statement).run();
-    }
+    await db.batch(migration.statements.map((s) => db.prepare(s)));
   }
   return mf;
 }
