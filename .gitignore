@@ -8,3 +8,4 @@ node_modules/
 .pytest_cache/
 relay-state.json
 relay-cookies.json
+relay-cookies.json.key
