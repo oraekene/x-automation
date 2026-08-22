@@ -2,7 +2,9 @@ corpus/
 __pycache__/
 *.pyc
 node_modules/
-worker/.wrangler/
-worker/dist/
-worker/.dev.vars
+.scratch/x-automation/worker/.wrangler/
+.scratch/x-automation/worker/dist/
+.scratch/x-automation/worker/.dev.vars
 .pytest_cache/
+relay-state.json
+relay-cookies.json

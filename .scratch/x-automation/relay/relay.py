@@ -77,7 +77,12 @@ def fetch_json(
     body: dict | None = None,
 ) -> dict:
     """Request a URL and parse JSON; raises RelayError on failure."""
-    headers = {"Accept": "application/json"}
+    headers = {
+        "Accept": "application/json",
+        # Cloudflare bot protection on workers.dev bans the default
+        # Python-urllib signature with error 1010; send a plain browser UA.
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) x-automation-relay/1.0",
+    }
     if token:
         headers["Authorization"] = f"Bearer {token}"
     data = None
