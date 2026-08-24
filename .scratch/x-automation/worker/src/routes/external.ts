@@ -53,9 +53,14 @@ externalRoutes.post("/targeting", async (c) => {
 
   const nowSec = nowSeconds();
   const id = crypto.randomUUID();
+  // One-shot external targeting must not leak a permanent recurring
+  // automation (status='active' + next_run_at would be picked by
+  // tickAutomations every hour). Persist as 'external' so the synchronous
+  // runTargeting (which looks up by id regardless of status) still works,
+  // but the hourly tick (`status = 'active'`) never picks it up.
   await c.env.DB.prepare(
     `INSERT INTO automations (id, user_id, relay_id, name, status, search_criteria, targeting, rules, budgets, mode, auto_threshold, interval_minutes, timezone, next_run_at, created_at)
-     VALUES (?, ?, ?, ?, 'active', ?, ?, '{}', '{}', 'manual', 3, 60, 'UTC', ?, ?)`,
+     VALUES (?, ?, ?, ?, 'external', ?, ?, '{}', '{}', 'manual', 3, 60, 'UTC', ?, ?)`,
   )
     .bind(
       id,

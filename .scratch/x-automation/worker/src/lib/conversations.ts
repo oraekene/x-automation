@@ -126,18 +126,22 @@ function checkTurnCap(conv: ConversationRow, isNew: boolean, settings: ResolvedS
   return turnCount < settings.max_turns;
 }
 
-// Enqueue an inbound_scan command for each relay that has open conversations.
+// Enqueue an inbound_scan for every active relay. Previously this only scanned
+// relays with open conversations, so the very first reply to a user's tweet
+// was never discovered (US24 dead-on-arrival). Scanning all active relays is
+// cheap — the relay filters to `to:<screen_name>` + isReply — and ensures
+// new conversations can bootstrap.
 export async function tickConversations(env: Env): Promise<number> {
   const nowSec = nowSeconds();
 
-  const openRelays = (await env.DB.prepare(
-    "SELECT DISTINCT relay_id FROM conversations WHERE status = 'open'",
+  const relays = (await env.DB.prepare(
+    "SELECT id as relay_id FROM relays WHERE status = 'active' AND enabled = 1",
   ).all()) as unknown as { results: Array<{ relay_id: string }> };
 
-  if (openRelays.results.length === 0) return 0;
+  if (relays.results.length === 0) return 0;
 
   const statements: D1PreparedStatement[] = [];
-  for (const r of openRelays.results) {
+  for (const r of relays.results) {
     const commandId = crypto.randomUUID();
     statements.push(
       commandInsert(env.DB, commandId, r.relay_id, "inbound_scan", "{}", nowSec),
