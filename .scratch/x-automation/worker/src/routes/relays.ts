@@ -238,6 +238,48 @@ relayRoutes.post("/:id/results", async (c) => {
   return c.json({ updated });
 });
 
+// Ticket 18: user-facing read of completed command results (the launcher
+// polls this after the relay reports). Same ownership rule as enqueue:
+// strangers get 404, never a leak.
+relayRoutes.get("/:id/results", async (c) => {
+  const user = await getUser(c);
+  if (!user) return c.json({ error: "unauthorized" }, 401);
+  const id = c.req.param("id");
+  if (!(await relayOwnedBy(c.env.DB, id, user.id))) return c.json({ error: "not found" }, 404);
+  const status = c.req.query("status") ?? "done";
+  if (status !== "done" && status !== "failed") {
+    return c.json({ error: "status must be done or failed" }, 400);
+  }
+  const limit = Math.min(Math.max(parseInt(c.req.query("limit") ?? "50", 10) || 50, 1), 100);
+  const since = parseInt(c.req.query("since") ?? "0", 10) || 0;
+  const rows = (await c.env.DB.prepare(
+    `SELECT id, type, payload, status, result, completed_at FROM commands
+     WHERE relay_id = ? AND status = ? AND completed_at IS NOT NULL AND completed_at >= ?
+     ORDER BY completed_at DESC LIMIT ?`,
+  )
+    .bind(id, status, since, limit)
+    .all()) as unknown as {
+    results: Array<{
+      id: string;
+      type: string;
+      payload: string;
+      status: string;
+      result: string | null;
+      completed_at: number | null;
+    }>;
+  };
+  return c.json({
+    results: rows.results.map((r) => ({
+      command_id: r.id,
+      type: r.type,
+      payload: safeParse(r.payload),
+      status: r.status,
+      output: safeParse(r.result ?? "{}"),
+      completed_at: r.completed_at,
+    })),
+  });
+});
+
 relayRoutes.post("/:id/enabled", async (c) => {
   const user = await getUser(c);
   if (!user) return c.json({ error: "unauthorized" }, 401);

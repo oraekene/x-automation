@@ -293,4 +293,44 @@ describe("per-user scoping", () => {
       await mf.dispose();
     }
   });
+
+  it("exposes completed command results to the owning user", async () => {
+    const mf = await makeWorker();
+    try {
+      const { relay_id, token } = await createAndPair(mf);
+      const commandId = await enqueue(mf, relay_id, "user_posts", { screen_name: "alice" });
+      await pollCommands(mf, relay_id, token);
+      const posted = await mf.dispatchFetch(`http://localhost/api/relays/${relay_id}/results`, {
+        method: "POST",
+        headers: bearerHeaders(token),
+        body: JSON.stringify({ results: [{ command_id: commandId, ok: true, output: { tweets: [] } }] }),
+      });
+      expect(posted.status).toBe(200);
+
+      const res = await mf.dispatchFetch(`http://localhost/api/relays/${relay_id}/results`, {
+        headers: userHeaders(),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        results: { command_id: string; type: string; status: string; output: unknown }[];
+      };
+      expect(body.results).toHaveLength(1);
+      expect(body.results[0]).toMatchObject({
+        command_id: commandId,
+        type: "user_posts",
+        payload: { screen_name: "alice" },
+        status: "done",
+        output: { tweets: [] },
+      });
+
+      const stranger = await mf.dispatchFetch(`http://localhost/api/relays/${relay_id}/results`, {
+        headers: userHeaders("bob@example.com"),
+      });
+      expect(stranger.status).toBe(404);
+      const anon = await mf.dispatchFetch(`http://localhost/api/relays/${relay_id}/results`);
+      expect(anon.status).toBe(401);
+    } finally {
+      await mf.dispose();
+    }
+  });
 });
