@@ -9,3 +9,5 @@ node_modules/
 relay-state.json
 relay-cookies.json
 relay-cookies.json.key
+x-cookies.bin
+x-cookies.bin.key

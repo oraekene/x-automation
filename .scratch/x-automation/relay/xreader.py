@@ -366,10 +366,27 @@ def profile_lookup(
     query_id = resolver.resolve(USER_BY_SCREEN_NAME)
     url = xclient.graphql_url(host, query_id, USER_BY_SCREEN_NAME)
     body = {
-        "variables": {"screen_name": screen_name, "withSafetyModeUserFields": False},
-        "features": {},
+        "variables": {
+            "screen_name": screen_name,
+            "withSafetyModeUserFields": False,
+            "withGrokTranslatedBio": False,
+        },
+        "features": {
+            "hidden_profile_subscriptions_enabled": True,
+            "profile_label_improvements_pcf_label_in_post_enabled": True,
+            "responsive_web_profile_redirect_enabled": True,
+            "rweb_tipjar_consumption_enabled": False,
+            "verified_phone_label_enabled": False,
+            "subscriptions_verification_info_is_identity_verified_enabled": True,
+            "subscriptions_verification_info_verified_since_enabled": True,
+            "highlights_tweets_tab_ui_enabled": True,
+            "responsive_web_twitter_article_notes_tab_enabled": True,
+            "subscriptions_feature_can_gift_premium": True,
+            "creator_subscriptions_tweet_preview_api_enabled": True,
+            "responsive_web_graphql_timeline_navigation_enabled": True,
+        },
+        "fieldToggles": {"withPayments": False, "withAuxiliaryUserLabels": True},
         "queryId": query_id,
-        "url": url,
     }
     payload = transport(url, body, session)
     result = (payload.get("data") or {}).get("result") or {}

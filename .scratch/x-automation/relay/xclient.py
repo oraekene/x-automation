@@ -143,6 +143,7 @@ def twitter_request_headers(session: XSession, host: str = "https://x.com") -> d
     return {
         "Accept": "*/*",
         "Accept-Language": "en-US,en;q=0.9",
+        "Authorization": "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8mU9UkYqfoFZeG",
         "Cache-Control": "no-cache",
         "Content-Type": "application/json",
         "Origin": host,
@@ -159,6 +160,8 @@ def twitter_request_headers(session: XSession, host: str = "https://x.com") -> d
         "X-Twitter-Active-User": "yes",
         "X-Client-Transaction-Id": new_client_transaction_id(),
         "Cookie": session.cookie_header(),
+        "X-Twitter-Auth-Type": "OAuth2Session",
+        "X-Twitter-Client-Language": "en",
     }
 
 
@@ -290,8 +293,26 @@ def whoami(
     qid = query_id or USER_BY_SCREEN_NAME_QUERY_PLACEHOLDER
     url = graphql_url(host, qid, "UserByScreenName")
     body = {
-        "variables": {"screen_name": screen, "withSafetyModeUserFields": False},
-        "features": {},
+        "variables": {
+            "screen_name": screen,
+            "withSafetyModeUserFields": False,
+            "withGrokTranslatedBio": False,
+        },
+        "features": {
+            "hidden_profile_subscriptions_enabled": True,
+            "profile_label_improvements_pcf_label_in_post_enabled": True,
+            "responsive_web_profile_redirect_enabled": True,
+            "rweb_tipjar_consumption_enabled": False,
+            "verified_phone_label_enabled": False,
+            "subscriptions_verification_info_is_identity_verified_enabled": True,
+            "subscriptions_verification_info_verified_since_enabled": True,
+            "highlights_tweets_tab_ui_enabled": True,
+            "responsive_web_twitter_article_notes_tab_enabled": True,
+            "subscriptions_feature_can_gift_premium": True,
+            "creator_subscriptions_tweet_preview_api_enabled": True,
+            "responsive_web_graphql_timeline_navigation_enabled": True,
+        },
+        "fieldToggles": {"withPayments": False, "withAuxiliaryUserLabels": True},
         "queryId": qid,
     }
     payload = client.execute(url, body, session, max_attempts=max_attempts)
@@ -301,24 +322,41 @@ def whoami(
 def _unwrap_user(payload: dict) -> dict:
     if not isinstance(payload, dict):
         raise XNotFoundError("whoami response was not an object")
-    result = (payload.get("data") or {}).get("result")
-    if not isinstance(result, dict):
+    data = payload.get("data") or {}
+    node = data.get("result")
+    if not isinstance(node, dict):
+        node = (data.get("user") or {}).get("result")
+    if not isinstance(node, dict):
         raise XNotFoundError("whoami response lacks a user result")
-    user = user_from_result(result)
+    user = user_from_result(node)
     return {key: user.get(key) for key in ("rest_id", "screen_name", "name", "verified")}
 
 
+def _decode_user_id(raw: object) -> str | None:
+    import base64
+
+    try:
+        text = base64.b64decode(str(raw)).decode("utf-8")
+    except Exception:
+        return None
+    return text.split(":", 1)[1] if ":" in text else None
+
+
 def user_from_result(result: dict) -> dict:
-    """Map a UserByScreenName ``data.result`` object to the shared account
-    shape both whoami and the GraphQL read layer consume."""
     legacy = result.get("legacy") or {}
+    core = result.get("core") or {}
+    rel = result.get("relationship_counts") or {}
+    bio = result.get("profile_bio") or {}
+    loc = result.get("location")
+    if isinstance(loc, dict):
+        loc = loc.get("location")
     return {
-        "rest_id": result.get("rest_id"),
-        "screen_name": legacy.get("screen_name"),
-        "name": legacy.get("name"),
-        "verified": legacy.get("verified"),
-        "description": legacy.get("description"),
-        "followers_count": legacy.get("followers_count"),
-        "following_count": legacy.get("following_count"),
-        "location": legacy.get("location"),
+        "rest_id": result.get("rest_id") or _decode_user_id(result.get("id")),
+        "screen_name": legacy.get("screen_name") or core.get("screen_name"),
+        "name": legacy.get("name") or core.get("name"),
+        "verified": legacy.get("verified", result.get("is_blue_verified", False)),
+        "description": legacy.get("description") or bio.get("description"),
+        "followers_count": legacy.get("followers_count", rel.get("followers", 0)),
+        "following_count": legacy.get("following_count", rel.get("following", 0)),
+        "location": legacy.get("location") or loc,
     }
