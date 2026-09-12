@@ -25,13 +25,15 @@ T = TypeVar("T")
 
 # Operation names this read layer needs queryIds for.
 SEARCH_TIMELINE = "SearchTimeline"
-USER_TWEETS = "UserTweets"
+USER_TWEETS = "UserTweets"  # legacy name; X now serves profile posts as below
+USER_ORIGINALS_TIMELINE = "UserOriginalsTimeline"
 USER_BY_SCREEN_NAME = "UserByScreenName"
 
 FALLBACK_QUERY_IDS: dict[str, str] = {
     USER_BY_SCREEN_NAME: xclient.USER_BY_SCREEN_NAME_QUERY_PLACEHOLDER,
     SEARCH_TIMELINE: "SearchTimelineFb",  # placeholder; superseded by client.json / fetched tier
     USER_TWEETS: "UserTweetsFb",
+    USER_ORIGINALS_TIMELINE: "UserOriginalsTimelineFb",
 }
 
 
@@ -466,14 +468,15 @@ def user_posts(
     max_pages=1,
 ) -> list[Tweet]:
     """The account's own recent posts. Resolves the profile for its rest_id,
-    then walks UserTweets pages."""
+    then walks UserOriginalsTimeline pages (X's current profile-posts
+    operation; the legacy UserTweets name is kept for compatibility)."""
     profile = profile_lookup(transport, session, screen_name, resolver=resolver, host=host)
-    query_id = resolver.resolve(USER_TWEETS)
+    query_id = resolver.resolve(USER_ORIGINALS_TIMELINE)
     return _walk_pages(
         transport,
         session,
         query_id=query_id,
-        operation=USER_TWEETS,
+        operation=USER_ORIGINALS_TIMELINE,
         host=host,
         max_pages=max_pages,
         extractor=extract_tweets,

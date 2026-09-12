@@ -379,6 +379,28 @@ def test_user_posts_paginates():
     assert [t.id for t in posts] == ["10", "11"]
     assert transport.calls[2][1]["variables"]["cursor"] == "a"
 
+
+def test_user_posts_uses_originals_timeline_operation():
+    # X serves profile posts as UserOriginalsTimeline (live capture); the
+    # legacy UserTweets name 404s.
+    profile_payload = {
+        "data": {
+            "result": {
+                "rest_id": "111",
+                "legacy": {"screen_name": "nobody", "name": "Bob", "description": "", "followers_count": 0},
+            }
+        }
+    }
+    transport = FakeTransport(profile_payload, user_posts_payload(["10"]))
+    resolver = xreader.QueryIdResolver(
+        client_json={"UserByScreenName": "user-screen-id-current", "UserOriginalsTimeline": "live-originals-id"},
+        fallback=xreader.FALLBACK_QUERY_IDS,
+    )
+    posts = xreader.user_posts(transport, session_in(), "nobody", resolver=resolver)
+    assert [t.id for t in posts] == ["10"]
+    timeline_url, _ = transport.calls[1]
+    assert timeline_url == "https://x.com/i/api/graphql/live-originals-id/UserOriginalsTimeline"
+
 def user_result(rest_id, screen_name, *, followers=500, verified=False, location="London", bio="founder"):
     return {
         "rest_id": rest_id,
