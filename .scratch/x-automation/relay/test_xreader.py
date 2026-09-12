@@ -119,6 +119,14 @@ class TestQueryIdResolution:
         assert resolver.resolve("UserByScreenName") == xreader.FALLBACK_QUERY_IDS["UserByScreenName"]
         assert resolver.resolve("UserOriginalsTimeline") == xreader.FALLBACK_QUERY_IDS["UserOriginalsTimeline"]
 
+    def test_vendored_client_json_carries_real_ids(self):
+        # Guards the live-captured IDs: every operation the relay needs must
+        # resolve to a real queryId from tier 1, never a placeholder.
+        resolver = xreader.QueryIdResolver()
+        for op in ("SearchTimeline", "UserOriginalsTimeline", "UserByScreenName", "CreateTweet"):
+            value = resolver.resolve(op)
+            assert value and not value.endswith("Fb") and "placeholder" not in value.lower(), op
+
     def test_missing_operation_raises(self):
         resolver = xreader.QueryIdResolver(client_json={})
         with pytest.raises(xreader.QueryIdNotFoundError):

@@ -38,7 +38,7 @@ criterion is met and the issue is closed.
 - [ ] T18 Faster suite or CI per commit (#15)
 - [x] T19 Ticket-15 reconcile ordering — fixed, regression test drives maintenance (#20)
 - [ ] T20 US40 magic-link auth path beyond 50 users (#19)
-- [ ] T21 Real X queryIds for search/profile reads — all reads 404 on placeholders; 25818 stale scans purged (#21)
+- [ ] T21 Real X queryIds for reads/writes — all four captured live; needs relay restart + live proof (#21)
 
 ## GitHub mirror (all open, 2026-09-12)
 
