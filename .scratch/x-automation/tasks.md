@@ -14,7 +14,7 @@ criterion is met and the issue is closed.
 
 - [ ] T04 US12 semantic candidate discovery (#5, issues/08)
 - [ ] T05 US22 user voice/style for drafts (#3)
-- [ ] T06 US29/30 time-of-day schedules + dashboard UI (#1, issues/13)
+- [ ] T06 US29/30 time-of-day schedules + dashboard UI (#1, ticket 13)
 - [ ] T07 US43 pace the X read path (#9)
 - [ ] T08 Quiet hours pause open conversations (#10)
 - [ ] T09 Cron slot 3 budget resets: deploy or record drop decision (#8)
@@ -36,6 +36,8 @@ criterion is met and the issue is closed.
 
 - [ ] T17 Relay run loop survives reboots (#14)
 - [ ] T18 Faster suite or CI per commit (#15)
+- [x] T19 Ticket-15 reconcile ordering — fixed, regression test drives maintenance (#20)
+- [ ] T20 US40 magic-link auth path beyond 50 users (#19)
 
 ## GitHub mirror (all open, 2026-09-12)
 
@@ -57,3 +59,5 @@ criterion is met and the issue is closed.
 - #16 Finish live QA — https://github.com/oraekene/x-automation/issues/16
 - #17 Live end-to-end proof — https://github.com/oraekene/x-automation/issues/17
 - #18 POST /api/results live — https://github.com/oraekene/x-automation/issues/18
+- #19 US40 magic-link auth — https://github.com/oraekene/x-automation/issues/19
+- #20 Ticket-15 reconcile ordering (fixed) — https://github.com/oraekene/x-automation/issues/20

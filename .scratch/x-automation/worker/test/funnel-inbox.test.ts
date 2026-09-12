@@ -633,3 +633,39 @@ describe("content lifecycle", () => {
     }
   });
 });
+
+describe("stuck executing reconcile (ticket 15)", () => {
+  it("maintenance marks stale executing drafts failed and clears dedupe", async () => {
+    const mf = await makeWorker();
+    try {
+      const { relay_id } = await createAndPair(mf);
+      const db = await mf.getD1Database("DB");
+      const nowSec = Math.floor(Date.now() / 1000);
+      const stale = nowSec - 3 * 60 * 60; // older than the 2h stale window
+      await db.prepare(
+        "INSERT INTO candidates (id, user_id, automation_id, relay_id, tweet_id, author, text, found_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      ).bind("cand-stuck", "alice@example.com", "auto-stuck", relay_id, "t-stuck", "bob", "hello", nowSec).run();
+      await db.prepare("INSERT INTO dedup (user_id, relay_id, tweet_id, action, acted_at) VALUES (?, ?, ?, ?, ?)")
+        .bind("alice@example.com", relay_id, "t-stuck", "reply", nowSec).run();
+      await db.prepare(
+        "INSERT INTO commands (id, relay_id, type, payload, status, attempts, created_at, claimed_at) VALUES (?, ?, 'reply', '{}', 'in_flight', 1, ?, ?)",
+      ).bind("cmd-stuck", relay_id, stale, stale).run();
+      await db.prepare(
+        "INSERT INTO drafts (user_id, relay_id, automation_id, candidate_id, action, status, text, command_id, created_at) VALUES (?, ?, ?, ?, 'reply', 'executing', 'stuck text', ?, ?)",
+      ).bind("alice@example.com", relay_id, "auto-stuck", "cand-stuck", "cmd-stuck", nowSec).run();
+
+      // Full maintenance path (not the reconcile unit): stale flip must not
+      // starve the reconcile join — regression for the dead ordering.
+      await runScheduled({ cron: MAINT_CRON }, { DB: db });
+
+      const draft = (await db.prepare("SELECT status FROM drafts WHERE command_id = ?").bind("cmd-stuck").first()) as { status: string };
+      expect(draft.status).toBe("failed");
+      const dedupGone = await db.prepare("SELECT 1 FROM dedup WHERE user_id = ? AND tweet_id = ?").bind("alice@example.com", "t-stuck").first();
+      expect(dedupGone == null).toBe(true);
+      const cmd = (await db.prepare("SELECT status FROM commands WHERE id = ?").bind("cmd-stuck").first()) as { status: string };
+      expect(cmd.status).toBe("failed");
+    } finally {
+      await mf.dispose();
+    }
+  });
+});

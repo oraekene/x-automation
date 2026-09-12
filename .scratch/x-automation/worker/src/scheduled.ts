@@ -134,13 +134,16 @@ export async function tickAutomations(env: Env): Promise<number> {
 export async function maintenance(env: Env): Promise<number> {
   const now = nowSeconds();
   const staleCutoff = Math.floor((Date.now() - STALE_CLAIM_MS) / 1000);
+  // Reconcile FIRST: it joins drafts to commands still in_flight. The
+  // stale-claim flip below removes those rows, so running it first keeps
+  // stuck-executing drafts recoverable (ticket 15 was dead code otherwise).
+  await reconcileStuckDrafts(env, staleCutoff);
   const result = await env.DB.prepare(
     "UPDATE commands SET status = 'failed', result = ?, completed_at = ? WHERE status = 'in_flight' AND claimed_at < ?",
   )
     .bind(JSON.stringify({ error: "stale claim swept by maintenance" }), now, staleCutoff)
     .run();
   await conversationSweeper(env);
-  await reconcileStuckDrafts(env, staleCutoff);
   return result.meta.changes;
 }
 
