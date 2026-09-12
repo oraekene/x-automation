@@ -225,20 +225,33 @@ def _timeline(payload: dict) -> dict:
     return {}
 
 
+def _item_result(item: dict, result_key: str) -> dict | None:
+    content = item.get("itemContent") or item.get("entryContent") or {}
+    result = (content.get(result_key) or {}).get("result")
+    return result or None
+
+
 def _walk_entries(payload: dict, result_key: str) -> list[dict]:
     """Walk timeline entries, returning each entry's ``result`` object under
     the given ``itemContent`` key (``tweet_results`` for tweets, ``user_results``
-    for People-search profiles)."""
+    for People-search profiles).
+
+    Real profile/search pages carry almost all cells nested inside
+    ``TimelineTimelineModule`` entries (``content.items[].item``) with nearly
+    nothing at top level, so modules are descended into as well."""
     results: list[dict] = []
     instructions = _timeline(payload).get("instructions", [])
     for instruction in instructions:
         for entry in instruction.get("entries", []):
             content = entry.get("content") or {}
-            item = content.get("itemContent") or content.get("entryContent") or {}
-            result = (item.get(result_key) or {}).get("result")
-            if not result:
-                continue
-            results.append(result)
+            direct = _item_result(content, result_key)
+            if direct:
+                results.append(direct)
+            if content.get("entryType") == "TimelineTimelineModule":
+                for sub in content.get("items", []):
+                    nested = _item_result(sub.get("item") or {}, result_key)
+                    if nested:
+                        results.append(nested)
     return results
 
 

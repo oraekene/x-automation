@@ -59,6 +59,23 @@ def tweet_entry(rest_id):
     return {"entryId": f"tweet-{rest_id}", "content": {"itemContent": {"tweet_results": {"result": tweet(rest_id)}}}}
 
 
+def module_entry(rest_id):
+    # Real pages nest almost all cells in TimelineTimelineModule items
+    # (seen live: 44 modules vs 2 plain items on a profile timeline).
+    return {
+        "entryId": f"profile-conversation-{rest_id}",
+        "content": {
+            "entryType": "TimelineTimelineModule",
+            "items": [
+                {
+                    "entryId": f"profile-conversation-{rest_id}-tweet-{rest_id}",
+                    "item": {"itemContent": {"tweet_results": {"result": tweet(rest_id)}}},
+                }
+            ],
+        },
+    }
+
+
 def cursor_entry(token):
     return {
         "entryId": f"cursor-{token}",
@@ -189,6 +206,13 @@ class TestDomainMapping:
         m = t.as_mapping()
         assert m["in_reply_to_tweet_id"] == "orig-1"
         assert m["in_reply_to_screen_name"] == "alice"
+
+    def test_module_nested_tweets_are_extracted(self):
+        payload = timeline_payload([module_entry("7")])
+        tweets = xreader.extract_tweets(payload)
+        assert len(tweets) == 1
+        assert tweets[0].id == "7"
+        assert tweets[0].author == "alice"
 
 
 class TestPagination:
