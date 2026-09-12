@@ -527,4 +527,28 @@ describe("tickConversations", () => {
       await mf.dispose();
     }
   });
+
+  it("does not enqueue a duplicate pending inbound_scan", async () => {
+    const mf = await makeWorker();
+    try {
+      const { relay_id } = await setup(mf);
+      const db = await mf.getD1Database("DB");
+      const nowSec = Math.floor(Date.now() / 1000);
+      await db.prepare(
+        "INSERT INTO commands (id, relay_id, type, payload, status, attempts, created_at) VALUES (?, ?, 'inbound_scan', '{}', 'pending', 0, ?)",
+      ).bind(crypto.randomUUID(), relay_id, nowSec).run();
+
+      await runScheduled({ cron: TICK_CRON }, { DB: db });
+
+      // Still exactly one: a pending scan supersedes, never duplicates.
+      // Without the guard an offline relay banks one row per tick and D1
+      // row-read quota burns on every scan over the pileup.
+      const pending = (await db.prepare(
+        "SELECT COUNT(*) as n FROM commands WHERE relay_id = ? AND type = 'inbound_scan' AND status = 'pending'",
+      ).bind(relay_id).first()) as { n: number };
+      expect(pending.n).toBe(1);
+    } finally {
+      await mf.dispose();
+    }
+  });
 });

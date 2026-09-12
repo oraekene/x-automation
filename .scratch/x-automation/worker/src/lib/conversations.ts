@@ -126,16 +126,21 @@ function checkTurnCap(conv: ConversationRow, isNew: boolean, settings: ResolvedS
   return turnCount < settings.max_turns;
 }
 
-// Enqueue an inbound_scan for every active relay. Previously this only scanned
-// relays with open conversations, so the very first reply to a user's tweet
-// was never discovered (US24 dead-on-arrival). Scanning all active relays is
-// cheap — the relay filters to `to:<screen_name>` + isReply — and ensures
-// new conversations can bootstrap.
+// Enqueue an inbound_scan for every active relay that does not already have
+// one pending. Scans are identical no-ops-in-waiting, so without the NOT
+// EXISTS guard an offline relay accumulates one row per tick — the 26k-row
+// pileup that burned the D1 free-tier row-read quota. Bounded to ~1 row
+// per relay, the queue (and every COUNT scan over it) stays tiny.
 export async function tickConversations(env: Env): Promise<number> {
   const nowSec = nowSeconds();
 
   const relays = (await env.DB.prepare(
-    "SELECT id as relay_id FROM relays WHERE status = 'active' AND enabled = 1",
+    `SELECT id as relay_id FROM relays
+     WHERE status = 'active' AND enabled = 1
+     AND NOT EXISTS (
+       SELECT 1 FROM commands
+       WHERE relay_id = relays.id AND type = 'inbound_scan' AND status = 'pending'
+     )`,
   ).all()) as unknown as { results: Array<{ relay_id: string }> };
 
   if (relays.results.length === 0) return 0;
