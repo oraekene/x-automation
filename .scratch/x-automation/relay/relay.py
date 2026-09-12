@@ -32,7 +32,7 @@ import xwriter
 
 log = logging.getLogger("relay")
 
-DEFAULT_POLL_INTERVAL_S = 5.0
+DEFAULT_POLL_INTERVAL_S = 30.0
 DEFAULT_STATE_FILE = "relay-state.json"
 DEFAULT_COOKIE_STORE = "x-cookies.bin"
 
@@ -80,8 +80,9 @@ def fetch_json(
     headers = {
         "Accept": "application/json",
         # Cloudflare bot protection on workers.dev bans the default
-        # Python-urllib signature with error 1010; send a plain browser UA.
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) x-automation-relay/1.0",
+        # Python-urllib signature, and scores exotic suffixes as bots:
+        # reuse the full Chrome string (same one X traffic uses).
+        "User-Agent": xclient.CHROME_USER_AGENT,
     }
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -298,7 +299,10 @@ def run_loop(
         try:
             run_once(state, reader=reader, writer=writer)
             on_status("connected")
-        except RelayError:
+        except RelayError as e:
+            # Keep the terse status contract, but log the cause: a bare
+            # "unreachable" once hid a 403-vs-401-vs-DNS question for hours.
+            log.warning("poll cycle failed: %s", e)
             on_status("unreachable")
         sleep(interval)
 
