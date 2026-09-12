@@ -39,6 +39,7 @@ criterion is met and the issue is closed.
 - [x] T19 Ticket-15 reconcile ordering — fixed, regression test drives maintenance (#20)
 - [ ] T20 US40 magic-link auth path beyond 50 users (#19)
 - [ ] T21 Real X queryIds for reads/writes — all four captured live; needs relay restart + live proof (#21)
+- [ ] T22 D1 quota guardrails and usage monitoring — queue bounded; visibility still missing (#22)
 
 ## GitHub mirror (all open, 2026-09-12)
 
@@ -63,3 +64,4 @@ criterion is met and the issue is closed.
 - #19 US40 magic-link auth — https://github.com/oraekene/x-automation/issues/19
 - #20 Ticket-15 reconcile ordering (fixed) — https://github.com/oraekene/x-automation/issues/20
 - #21 Real queryIds for reads — https://github.com/oraekene/x-automation/issues/21
+- #22 D1 quota guardrails — https://github.com/oraekene/x-automation/issues/22
