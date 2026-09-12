@@ -117,7 +117,7 @@ class TestQueryIdResolution:
     def test_falls_back_to_constants(self):
         resolver = xreader.QueryIdResolver(client_json={})
         assert resolver.resolve("UserByScreenName") == xreader.FALLBACK_QUERY_IDS["UserByScreenName"]
-        assert resolver.resolve("UserTweets") == xreader.FALLBACK_QUERY_IDS["UserTweets"]
+        assert resolver.resolve("UserOriginalsTimeline") == xreader.FALLBACK_QUERY_IDS["UserOriginalsTimeline"]
 
     def test_missing_operation_raises(self):
         resolver = xreader.QueryIdResolver(client_json={})

@@ -25,14 +25,12 @@ T = TypeVar("T")
 
 # Operation names this read layer needs queryIds for.
 SEARCH_TIMELINE = "SearchTimeline"
-USER_TWEETS = "UserTweets"  # legacy name; X now serves profile posts as below
-USER_ORIGINALS_TIMELINE = "UserOriginalsTimeline"
+USER_ORIGINALS_TIMELINE = "UserOriginalsTimeline"  # X's live profile-posts op (replaces legacy UserTweets)
 USER_BY_SCREEN_NAME = "UserByScreenName"
 
 FALLBACK_QUERY_IDS: dict[str, str] = {
     USER_BY_SCREEN_NAME: xclient.USER_BY_SCREEN_NAME_QUERY_PLACEHOLDER,
     SEARCH_TIMELINE: "SearchTimelineFb",  # placeholder; superseded by client.json / fetched tier
-    USER_TWEETS: "UserTweetsFb",
     USER_ORIGINALS_TIMELINE: "UserOriginalsTimelineFb",
 }
 
